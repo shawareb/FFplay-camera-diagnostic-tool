@@ -627,7 +627,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         dropped_interval_plot = cumulative_to_interval(drops_plot)
 
         # Combined chart: interval frame bars + live bandwidth line.
-        fig1, ax1 = plt.subplots(figsize=(10.8, 4.8), facecolor="#071523")
+        fig1, ax1 = plt.subplots(figsize=(10.8, 5.2), facecolor="#071523")
         ax1.set_facecolor("#071523")
         if len(x_plot) > 1:
             gaps = [curr - prev for prev, curr in zip(x_plot, x_plot[1:]) if curr > prev]
@@ -652,10 +652,25 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
             alpha=0.82,
             label="Dropped Frames",
         )
-        ax1.set_title("Live Dashboard Graph")
-        ax1.set_xlabel("Elapsed Time (sec)")
-        ax1.set_ylabel("Frames per Sample")
-        ax1.grid(True, axis="y", alpha=0.25)
+        avg_received = safe_mean([v for v in received_interval_plot if v > 0])
+        if avg_received > 0:
+            ax1.axhline(avg_received, color="#80ED99", linewidth=1.0, linestyle=":", alpha=0.55)
+            ax1.text(
+                x_plot[-1] if x_plot else 0,
+                avg_received,
+                f" avg {avg_received:.1f}",
+                color="#80ED99",
+                fontsize=7,
+                va="bottom",
+                alpha=0.85,
+            )
+        ax1.set_title("Live Dashboard  —  Frames Received vs Dropped + Bandwidth", color="#F8FAFC", fontsize=11, pad=6)
+        ax1.set_xlabel("Elapsed Time (sec)", color="#E0E1DD")
+        ax1.set_ylabel("Frames per Sample Interval", color="#E0E1DD")
+        ax1.grid(True, axis="y", alpha=0.20, color="#37506B")
+        ax1.tick_params(colors="#E0E1DD")
+        for spine in ax1.spines.values():
+            spine.set_color("#37506B")
         ax2 = ax1.twinx()
         ax2.set_facecolor("#071523")
         (bandwidth_line,) = ax2.plot(
@@ -667,24 +682,20 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
             markersize=3.0,
             label="Bandwidth (kbps)",
         )
-        ax2.set_ylabel("Bandwidth (kbps)")
-        ax1.tick_params(colors="#E0E1DD")
+        avg_bw = safe_mean([v for v in bandwidth_plot if v > 0])
+        if avg_bw > 0:
+            ax2.axhline(avg_bw, color="#4CC9F0", linewidth=1.0, linestyle=":", alpha=0.50)
+        ax2.set_ylabel("Bandwidth (kbps)", color="#E0E1DD")
         ax2.tick_params(colors="#E0E1DD")
-        ax1.xaxis.label.set_color("#E0E1DD")
-        ax1.yaxis.label.set_color("#E0E1DD")
-        ax2.yaxis.label.set_color("#E0E1DD")
-        ax1.title.set_color("#F8FAFC")
-        for spine in ax1.spines.values():
-            spine.set_color("#37506B")
         for spine in ax2.spines.values():
             spine.set_color("#37506B")
         ax1.legend(
             [received_bars, dropped_bars, bandwidth_line],
             ["Frames Received", "Dropped Frames", "Bandwidth (kbps)"],
             loc="center left",
-            bbox_to_anchor=(1.01, 0.5),
+            bbox_to_anchor=(1.08, 0.5),
             fontsize=8,
-            title="Key",
+            title="Legend",
             frameon=True,
             facecolor="#102235",
             edgecolor="#37506B",
@@ -693,14 +704,19 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         legend = ax1.get_legend()
         if legend:
             legend.get_title().set_color("#E0E1DD")
+        fig1.text(
+            0.5, 0.01,
+            "Green bars = frames captured each interval  |  Red bars = frames dropped  |  Blue line = network bandwidth",
+            ha="center", fontsize=7, color="#A9BCD0",
+        )
         frames_chart = charts_dir / "timeline_frames.png"
-        fig1.tight_layout(rect=(0, 0, 0.84, 1))
+        fig1.tight_layout(rect=(0, 0.04, 0.84, 1))
         fig1.savefig(frames_chart, dpi=150)
         plt.close(fig1)
         out["timeline_frames"] = str(frames_chart)
 
-        fig_expected, ax_expected = plt.subplots(figsize=(10.4, 4.6))
-        ax_expected.plot(x_plot, frames_plot, color="#2A9D8F", linewidth=2.1, label="Frames Received")
+        fig_expected, ax_expected = plt.subplots(figsize=(10.4, 5.0))
+        ax_expected.plot(x_plot, frames_plot, color="#2A9D8F", linewidth=2.3, label="Frames Received")
         ax_expected.plot(x_plot, expected_frames_plot, color="#264653", linewidth=2.0, linestyle="--", label="Expected Frames")
         ax_expected.fill_between(
             x_plot,
@@ -708,83 +724,151 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
             expected_frames_plot,
             where=[exp >= frm for exp, frm in zip(expected_frames_plot, frames_plot)],
             color="#E76F51",
-            alpha=0.22,
+            alpha=0.28,
             interpolate=True,
-            label="Gap",
+            label="Drop Gap",
         )
-        ax_expected.set_title("Expected vs Received Frames")
+        final_received = frames_plot[-1] if frames_plot else 0
+        final_expected = expected_frames_plot[-1] if expected_frames_plot else 0
+        gap = max(0.0, final_expected - final_received)
+        gap_pct = (gap / final_expected * 100.0) if final_expected > 0 else 0.0
+        ax_expected.set_title(
+            f"Expected vs Received Frames  —  Final gap: {gap:.0f} frames ({gap_pct:.1f}%)",
+            fontsize=11, pad=6,
+        )
         ax_expected.set_xlabel("Elapsed Time (sec)")
-        ax_expected.set_ylabel("Frames")
-        ax_expected.grid(True, alpha=0.25)
-        ax_expected.legend(loc="best")
+        ax_expected.set_ylabel("Cumulative Frames")
+        ax_expected.grid(True, alpha=0.28)
+        ax_expected.legend(loc="upper left", fontsize=9)
+        fig_expected.text(
+            0.5, 0.01,
+            "Shaded orange area = cumulative frame gap (expected minus received). Larger gap = more drops.",
+            ha="center", fontsize=7.5, color="#555",
+        )
         expected_chart = charts_dir / "expected_vs_received.png"
-        fig_expected.tight_layout()
+        fig_expected.tight_layout(rect=(0, 0.04, 1, 1))
         fig_expected.savefig(expected_chart, dpi=150)
         plt.close(fig_expected)
         out["expected_vs_received"] = str(expected_chart)
 
-        fig2, (ax_mid, ax_bot) = plt.subplots(2, 1, figsize=(10, 5.2), sharex=True)
-        ax_mid.plot(x, realtime_fps, color="#2A9D8F", linewidth=1.8)
+        fig2, (ax_mid, ax_bot) = plt.subplots(2, 1, figsize=(10, 6.0), sharex=True)
+        avg_fps = safe_mean([v for v in realtime_fps if v > 0])
+        ax_mid.plot(x, realtime_fps, color="#2A9D8F", linewidth=1.8, label="Realtime FPS")
+        if avg_fps > 0:
+            ax_mid.axhline(avg_fps, color="#2A9D8F", linewidth=1.0, linestyle="--", alpha=0.60, label=f"Avg {avg_fps:.1f} FPS")
         ax_mid.set_ylabel("Realtime FPS")
-        ax_mid.set_title("Quality Timeline")
+        ax_mid.set_title("Quality Timeline  —  FPS & Health Score over Time", pad=6)
+        ax_mid.legend(loc="upper right", fontsize=8)
         ax_mid.grid(True, alpha=0.25)
 
-        ax_bot.plot(x, health, color="#6A4C93", linewidth=1.8)
-        ax_bot.fill_between(x, health, [100.0] * len(health), color="#6A4C93", alpha=0.12)
-        ax_bot.set_ylabel("Health Score")
+        # Health zone bands: green >= 90, yellow 75-90, orange 55-75, red < 55
+        ax_bot.axhspan(90, 100, color="#2dc653", alpha=0.10, label="Excellent (90-100)")
+        ax_bot.axhspan(75, 90, color="#80c900", alpha=0.10, label="Good (75-89)")
+        ax_bot.axhspan(55, 75, color="#f5a623", alpha=0.10, label="Fair (55-74)")
+        ax_bot.axhspan(0, 55, color="#e63946", alpha=0.10, label="Poor (<55)")
+        ax_bot.plot(x, health, color="#6A4C93", linewidth=2.0, zorder=3, label="Health Score")
+        ax_bot.fill_between(x, health, alpha=0.15, color="#6A4C93")
+        ax_bot.axhline(90, color="#2dc653", linewidth=0.8, linestyle=":", alpha=0.7)
+        ax_bot.axhline(75, color="#80c900", linewidth=0.8, linestyle=":", alpha=0.7)
+        ax_bot.axhline(55, color="#e63946", linewidth=0.8, linestyle=":", alpha=0.7)
+        ax_bot.set_ylabel("Health Score (0–100)")
         ax_bot.set_xlabel("Elapsed Time (sec)")
-        ax_bot.set_ylim(0, 100)
-        ax_bot.grid(True, alpha=0.25)
+        ax_bot.set_ylim(0, 105)
+        ax_bot.grid(True, alpha=0.20)
+        ax_bot.legend(loc="lower right", fontsize=7, ncol=2)
+        fig2.text(
+            0.5, 0.01,
+            "Green zone = Excellent  |  Yellow = Good  |  Orange = Fair  |  Red = Poor",
+            ha="center", fontsize=7.5, color="#555",
+        )
         perf_chart = charts_dir / "timeline_performance.png"
-        fig2.tight_layout()
+        fig2.tight_layout(rect=(0, 0.04, 1, 1))
         fig2.savefig(perf_chart, dpi=150)
         plt.close(fig2)
         out["timeline_performance"] = str(perf_chart)
 
-        fig_drop, (ax_drop_top, ax_drop_bottom) = plt.subplots(2, 1, figsize=(10.2, 5.4), sharex=True)
-        ax_drop_top.plot(x, drops, color="#E63946", linewidth=2.0)
+        fig_drop, (ax_drop_top, ax_drop_bottom) = plt.subplots(2, 1, figsize=(10.2, 5.8), sharex=True)
+        ax_drop_top.plot(x, drops, color="#E63946", linewidth=2.2)
         ax_drop_top.fill_between(x, drops, color="#E63946", alpha=0.16)
+        final_drops = drops[-1] if drops else 0
         ax_drop_top.set_ylabel("Cumulative Drops")
-        ax_drop_top.set_title("Drop Timeline")
+        ax_drop_top.set_title(f"Drop Timeline  —  Total dropped: {final_drops:.0f} frames", pad=6)
         ax_drop_top.grid(True, alpha=0.25)
-        ax_drop_bottom.bar(x_plot, dropped_interval_plot, color="#F94144", alpha=0.75, label="Dropped Frames / Sample")
-        ax_drop_bottom.plot(x_plot, drop_rate_plot, color="#6D597A", linewidth=1.8, marker="o", markersize=3.0, label="Drop Rate %")
-        ax_drop_bottom.set_ylabel("Drop Count / %")
+        ax_drop_bottom.bar(x_plot, dropped_interval_plot, color="#F94144", alpha=0.75, label="Drops / Interval")
+        ax_drop_bottom.plot(
+            x_plot, drop_rate_plot, color="#6D597A", linewidth=1.8,
+            marker="o", markersize=3.0, label="Drop Rate %",
+        )
+        avg_drop_rate = safe_mean([v for v in drop_rate_plot if v > 0])
+        if avg_drop_rate > 0:
+            ax_drop_bottom.axhline(avg_drop_rate, color="#6D597A", linewidth=1.0, linestyle="--", alpha=0.60,
+                                   label=f"Avg {avg_drop_rate:.1f}%")
+        ax_drop_bottom.set_ylabel("Drop Count / Rate (%)")
         ax_drop_bottom.set_xlabel("Elapsed Time (sec)")
         ax_drop_bottom.grid(True, alpha=0.25)
-        ax_drop_bottom.legend(loc="best")
+        ax_drop_bottom.legend(loc="upper right", fontsize=8)
+        fig_drop.text(
+            0.5, 0.01,
+            "Top panel: cumulative drops over time  |  Bottom: drops per sample + instantaneous drop rate %",
+            ha="center", fontsize=7.5, color="#555",
+        )
         drop_chart = charts_dir / "drop_timeline.png"
-        fig_drop.tight_layout()
+        fig_drop.tight_layout(rect=(0, 0.04, 1, 1))
         fig_drop.savefig(drop_chart, dpi=150)
         plt.close(fig_drop)
         out["drop_timeline"] = str(drop_chart)
 
         if any(value > 0 for value in bandwidth):
-            fig_bw, ax_bw = plt.subplots(figsize=(9.6, 4.2))
+            fig_bw, ax_bw = plt.subplots(figsize=(9.6, 4.6))
             positive_bandwidth = [value for value in bandwidth if value > 0]
-            ax_bw.hist(positive_bandwidth, bins=min(14, max(6, len(positive_bandwidth) // 2)), color="#4CC9F0", edgecolor="#264653")
-            ax_bw.set_title("Bandwidth Distribution")
+            ax_bw.hist(
+                positive_bandwidth,
+                bins=min(14, max(6, len(positive_bandwidth) // 2)),
+                color="#4CC9F0",
+                edgecolor="#264653",
+                alpha=0.85,
+            )
+            bw_mean = safe_mean(positive_bandwidth)
+            bw_med = safe_percentile(positive_bandwidth, 50.0)
+            bw_p95 = safe_percentile(positive_bandwidth, 95.0)
+            ax_bw.axvline(bw_mean, color="#F4A261", linewidth=2.0, linestyle="--", label=f"Mean: {bw_mean:.0f} kbps")
+            ax_bw.axvline(bw_med, color="#2A9D8F", linewidth=1.8, linestyle=":", label=f"Median: {bw_med:.0f} kbps")
+            ax_bw.axvline(bw_p95, color="#E63946", linewidth=1.5, linestyle="-.", label=f"P95: {bw_p95:.0f} kbps")
+            ax_bw.set_title(f"Bandwidth Distribution  —  Mean {bw_mean:.0f} kbps  |  P95 {bw_p95:.0f} kbps", pad=6)
             ax_bw.set_xlabel("Bandwidth (kbps)")
-            ax_bw.set_ylabel("Samples")
+            ax_bw.set_ylabel("Number of Samples")
             ax_bw.grid(True, axis="y", alpha=0.25)
+            ax_bw.legend(loc="upper right", fontsize=8)
+            fig_bw.text(
+                0.5, 0.01,
+                "Each bar = how many samples had that bandwidth.  Narrow spread = stable stream.",
+                ha="center", fontsize=7.5, color="#555",
+            )
             bandwidth_hist = charts_dir / "bandwidth_distribution.png"
-            fig_bw.tight_layout()
+            fig_bw.tight_layout(rect=(0, 0.04, 1, 1))
             fig_bw.savefig(bandwidth_hist, dpi=150)
             plt.close(fig_bw)
             out["bandwidth_distribution"] = str(bandwidth_hist)
 
         if any(abs(wall - media) > 0.05 for wall, media in zip(wall_elapsed, x)):
-            fig_clock, ax_clock = plt.subplots(figsize=(10.0, 4.2))
-            ax_clock.plot(x, x, color="#2A9D8F", linewidth=2.0, label="Media Clock")
-            ax_clock.plot(x, wall_elapsed, color="#BC6C25", linewidth=2.0, linestyle="--", label="Wall Clock")
-            ax_clock.fill_between(x, x, wall_elapsed, color="#BC6C25", alpha=0.14)
-            ax_clock.set_title("Media Clock vs Wall Clock")
+            fig_clock, ax_clock = plt.subplots(figsize=(10.0, 4.6))
+            ax_clock.plot(x, x, color="#2A9D8F", linewidth=2.0, label="Media Clock (ideal)")
+            ax_clock.plot(x, wall_elapsed, color="#BC6C25", linewidth=2.0, linestyle="--", label="Wall Clock (actual)")
+            ax_clock.fill_between(x, x, wall_elapsed, color="#BC6C25", alpha=0.18, label="Clock drift")
+            drift_values = [abs(w - m) for w, m in zip(wall_elapsed, x)]
+            max_drift = max(drift_values) if drift_values else 0.0
+            ax_clock.set_title(f"Media Clock vs Wall Clock  —  Max drift: {max_drift:.2f}s", pad=6)
             ax_clock.set_xlabel("Timeline Sample (sec)")
             ax_clock.set_ylabel("Elapsed Time (sec)")
             ax_clock.grid(True, alpha=0.25)
-            ax_clock.legend(loc="best")
+            ax_clock.legend(loc="upper left", fontsize=8)
+            fig_clock.text(
+                0.5, 0.01,
+                "Gap between lines = clock drift.  Large drift may indicate buffering, re-buffering, or time-sync issues.",
+                ha="center", fontsize=7.5, color="#555",
+            )
             clock_chart = charts_dir / "media_vs_wall.png"
-            fig_clock.tight_layout()
+            fig_clock.tight_layout(rect=(0, 0.04, 1, 1))
             fig_clock.savefig(clock_chart, dpi=150)
             plt.close(fig_clock)
             out["media_vs_wall"] = str(clock_chart)
@@ -795,17 +879,22 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         if received_frames <= 0 and dropped_frames <= 0:
             received_frames = 1.0
             dropped_frames = 0.0
-        fig3, ax3 = plt.subplots(figsize=(5.4, 5.4))
-        ax3.pie(
+        total_f = received_frames + max(0.0, dropped_frames)
+        fig3, ax3 = plt.subplots(figsize=(5.6, 5.6))
+        wedge_props = {"linewidth": 1.5, "edgecolor": "#ffffff"}
+        wedges, texts, autotexts = ax3.pie(
             [received_frames, max(0.0, dropped_frames)],
-            labels=["Received", "Dropped"],
+            labels=[f"Received\n{received_frames:.0f}", f"Dropped\n{dropped_frames:.0f}"],
             colors=["#2A9D8F", "#E63946"],
             autopct="%1.1f%%",
             startangle=90,
-            wedgeprops={"linewidth": 1.0, "edgecolor": "#ffffff"},
+            wedgeprops=wedge_props,
             textprops={"fontsize": 10},
         )
-        ax3.set_title("Frame Distribution")
+        for autotext in autotexts:
+            autotext.set_fontsize(9)
+            autotext.set_fontweight("bold")
+        ax3.set_title(f"Frame Distribution  —  {total_f:.0f} total frames", pad=8)
         pie_chart = charts_dir / "frame_distribution_pie.png"
         fig3.tight_layout()
         fig3.savefig(pie_chart, dpi=160)
@@ -816,13 +905,27 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         if warning_breakdown:
             keys = list(warning_breakdown.keys())
             vals = [float(warning_breakdown.get(k, 0) or 0) for k in keys]
-            fig4, ax4 = plt.subplots(figsize=(8.2, 3.8))
-            ax4.bar(keys, vals, color="#F4A261")
-            ax4.set_title("Warning Categories")
-            ax4.set_ylabel("Count")
+            bar_colors = ["#E76F51" if v >= max(vals) * 0.7 else "#F4A261" for v in vals]
+            fig4, ax4 = plt.subplots(figsize=(8.4, 4.0))
+            bars4 = ax4.bar(keys, vals, color=bar_colors, edgecolor="#264653", linewidth=0.8)
+            for bar, val in zip(bars4, vals):
+                if val > 0:
+                    ax4.text(
+                        bar.get_x() + bar.get_width() / 2.0,
+                        bar.get_height() + 0.05,
+                        str(int(val)),
+                        ha="center", va="bottom", fontsize=9, fontweight="bold",
+                    )
+            ax4.set_title("Warning Categories  —  by type", pad=6)
+            ax4.set_ylabel("Warning Count")
             ax4.grid(True, axis="y", alpha=0.25)
+            fig4.text(
+                0.5, 0.01,
+                "Darker bars = most frequent warning type.  Timeout & packet_loss warnings suggest network instability.",
+                ha="center", fontsize=7.5, color="#555",
+            )
             warn_chart = charts_dir / "warning_categories.png"
-            fig4.tight_layout()
+            fig4.tight_layout(rect=(0, 0.06, 1, 1))
             fig4.savefig(warn_chart, dpi=150)
             plt.close(fig4)
             out["warning_categories"] = str(warn_chart)
@@ -2794,14 +2897,255 @@ class DiagnosticWorker(threading.Thread):
         }
 
 
+def _build_diagnosis_narrative(
+    *,
+    health_score: int,
+    health_grade: str,
+    estimated_drops: int,
+    frames_received: int,
+    warning_count: int,
+    drop_rate: float,
+    startup_latency: float,
+    freeze_total: float,
+    missed_packets: int,
+    fps_jitter: float,
+    bw_avg: float,
+    bw_p95: float,
+    status: str,
+) -> tuple[str, list[str]]:
+    """Return (executive_summary_text, list_of_recommendations)."""
+    total = max(1, frames_received + max(0, estimated_drops))
+    drop_pct = drop_rate
+
+    if health_grade == "Excellent":
+        headline = (
+            f"The camera stream is performing excellently (score {health_score}/100). "
+            "All key indicators are within healthy ranges."
+        )
+    elif health_grade == "Good":
+        headline = (
+            f"The camera stream is performing well (score {health_score}/100). "
+            "Minor issues were detected but the stream is generally stable."
+        )
+    elif health_grade == "Fair":
+        headline = (
+            f"The camera stream shows moderate issues (score {health_score}/100). "
+            "Some frames are being lost and quality may be impacted."
+        )
+    else:
+        headline = (
+            f"The camera stream is in poor condition (score {health_score}/100). "
+            "Significant problems were detected that require attention."
+        )
+
+    if status == "failed":
+        headline = "The diagnostic run failed to connect or complete. " + headline
+    elif status == "stopped":
+        headline += " Note: the run was stopped manually before completion."
+
+    detail_parts: list[str] = []
+    if estimated_drops > 0:
+        detail_parts.append(
+            f"{estimated_drops} frames were dropped ({drop_pct:.1f}% drop rate out of "
+            f"{frames_received + estimated_drops} expected)."
+        )
+    else:
+        detail_parts.append("No frame drops detected during this diagnostic run.")
+
+    if freeze_total > 0:
+        detail_parts.append(f"Stream froze for a total of {freeze_total:.1f}s during the run.")
+
+    if missed_packets > 0:
+        detail_parts.append(
+            f"{missed_packets} missed RTP packets were detected, suggesting network packet loss."
+        )
+
+    if startup_latency > 3.0:
+        detail_parts.append(
+            f"Stream took {startup_latency:.1f}s to start, which is above the recommended 3s threshold."
+        )
+
+    if fps_jitter > 15.0:
+        detail_parts.append(
+            f"FPS jitter is {fps_jitter:.1f}% of nominal, indicating unstable frame timing."
+        )
+
+    if warning_count > 0:
+        detail_parts.append(f"{warning_count} diagnostic warnings were logged during the run.")
+
+    if bw_avg > 0:
+        detail_parts.append(
+            f"Average bandwidth was {bw_avg:.0f} kbps (P95: {bw_p95:.0f} kbps)."
+        )
+
+    summary_text = headline + " " + " ".join(detail_parts)
+
+    # Build recommendations
+    recs: list[str] = []
+    if drop_pct > 5.0:
+        recs.append(
+            "HIGH DROP RATE: Switch to TCP transport (more reliable than UDP for high-loss networks). "
+            "Check network switch bandwidth and camera firmware."
+        )
+    elif drop_pct > 1.0:
+        recs.append(
+            "MODERATE DROP RATE: Consider switching to TCP transport if currently using UDP. "
+            "Check for network congestion between camera and recorder."
+        )
+
+    if missed_packets > 50:
+        recs.append(
+            "PACKET LOSS DETECTED: Check the physical network path to the camera. "
+            "Look for faulty cables, overloaded switches, or Wi-Fi interference."
+        )
+
+    if startup_latency > 5.0:
+        recs.append(
+            "SLOW STARTUP: High startup latency may indicate the camera is slow to respond or "
+            "the network path has high latency. Check camera CPU usage and network ping times."
+        )
+
+    if freeze_total > 2.0:
+        recs.append(
+            "STREAM FREEZES: Freezing is often caused by buffer overflows or insufficient bandwidth. "
+            "Try reducing the stream resolution or bitrate, or increase buffer size."
+        )
+
+    if fps_jitter > 20.0:
+        recs.append(
+            "HIGH FPS JITTER: Unstable frame timing suggests the camera is struggling to encode "
+            "at the nominal frame rate. Reduce resolution/bitrate or check camera load."
+        )
+
+    if bw_avg > 0 and bw_p95 > bw_avg * 2.0:
+        recs.append(
+            "BANDWIDTH SPIKES: The P95 bandwidth is more than 2x the average, indicating "
+            "bursty traffic. Ensure sufficient network headroom for peak loads."
+        )
+
+    if warning_count > 20:
+        recs.append(
+            "MANY WARNINGS: A large number of log warnings were emitted. Review the Warning "
+            "Samples section at the end of this report for details."
+        )
+
+    if not recs:
+        recs.append(
+            "No significant issues detected. Continue monitoring regularly to track trends "
+            "and detect degradation early."
+        )
+
+    return summary_text, recs
+
+
+def _add_per_second_detail_pages(pdf: "FPDF", report_data: dict, engine_info: dict) -> None:
+    """Append per-second telemetry table pages to *pdf*."""
+    timeline = report_data.get("timeline", [])
+    if not timeline:
+        return
+
+    elapsed_points = [float(item.get("analysis_elapsed_sec", item.get("elapsed_sec", 0.0)) or 0.0) for item in timeline]
+    frame_points = [float(item.get("frame", 0.0) or 0.0) for item in timeline]
+    drop_points = [float(item.get("estimated_drop_frames", 0.0) or 0.0) for item in timeline]
+    bandwidth_points = [float(item.get("bandwidth_kbps_current", 0.0) or 0.0) for item in timeline]
+    health_points = [int(item.get("health_score", 0) or 0) for item in timeline]
+    realtime_points = [float(item.get("fps_realtime_num", 0.0) or 0.0) for item in timeline]
+    wall_points = [
+        float(item.get("wall_elapsed_sec", item.get("analysis_elapsed_sec", item.get("elapsed_sec", 0.0))) or 0.0)
+        for item in timeline
+    ]
+    frame_intervals = cumulative_to_interval(frame_points)
+    drop_intervals = cumulative_to_interval(drop_points)
+    engine_requested = normalize_engine_mode(str(engine_info.get("requested", "ffmpeg")))
+
+    if engine_requested == "gstreamer":
+        columns = [
+            ("Sec", 18), ("Rx", 16), ("Rx/s", 20), ("Drop", 18),
+            ("BW kbps", 28), ("Drift", 24), ("Health", 22),
+        ]
+    else:
+        columns = [
+            ("Sec", 18), ("Rx", 16), ("Rx/s", 20), ("Drop", 18),
+            ("BW kbps", 28), ("RT FPS", 24), ("Health", 22),
+        ]
+
+    def start_table_page() -> None:
+        pdf.add_page()
+        pdf.set_fill_color(42, 157, 143)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(0, 8, "  Per-Second Diagnostics", border=0, fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Helvetica", "I", 8)
+        pdf.set_text_color(100, 110, 130)
+        pdf.multi_cell(
+            0, 4.5,
+            "Rows sampled from engine telemetry at ~1-second intervals.  "
+            "Sec=elapsed time  Rx=cumulative frames received  Rx/s=frames per sec  "
+            "Drop=cumulative drops  BW=bandwidth  RT FPS=realtime fps  Health=score 0-100",
+            border=0,
+        )
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(1)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_fill_color(220, 230, 242)
+        pdf.set_text_color(30, 40, 60)
+        for col_title, col_width in columns:
+            pdf.cell(col_width, 6, col_title, border=1, fill=True)
+        pdf.ln(6)
+        pdf.set_text_color(0, 0, 0)
+
+    start_table_page()
+    previous_elapsed = 0.0
+    for idx, elapsed in enumerate(elapsed_points):
+        if pdf.get_y() > pdf.h - pdf.b_margin - 9:
+            start_table_page()
+
+        delta_t = elapsed - previous_elapsed if idx > 0 else elapsed
+        delta_t = delta_t if delta_t > 0 else 1.0
+        interval_rx = int(round(frame_intervals[idx]))
+        interval_drop = int(round(drop_intervals[idx]))
+        interval_rx_fps = interval_rx / delta_t if delta_t > 0 else 0.0
+        bandwidth_value = bandwidth_points[idx]
+        health_value = health_points[idx]
+
+        if engine_requested == "gstreamer":
+            metric_text = f"{wall_points[idx] - elapsed:+.3f}s"
+        else:
+            metric_text = f"{realtime_points[idx]:.2f}"
+
+        row_values = [
+            f"{elapsed:.1f}",
+            str(int(round(frame_points[idx]))),
+            f"{interval_rx_fps:.2f}",
+            str(interval_drop),
+            f"{bandwidth_value:.1f}",
+            metric_text,
+            str(health_value),
+        ]
+
+        # colour-code health: green good / amber fair / red poor
+        if health_value >= 75:
+            pdf.set_fill_color(232, 248, 237)
+        elif health_value >= 55:
+            pdf.set_fill_color(255, 248, 225)
+        else:
+            pdf.set_fill_color(255, 232, 232)
+
+        pdf.set_font("Helvetica", "", 8)
+        for (_, col_width), cell_value in zip(columns, row_values):
+            pdf.cell(col_width, 5.5, cell_value, border=1, fill=(health_value < 90))
+        pdf.ln(5.5)
+        previous_elapsed = elapsed
+
+
 def write_pdf_report(report_path: Path, report_data: dict) -> None:
     if FPDF is None:
         raise RuntimeError(
             "PDF dependency missing. Install with: python -m pip install -r requirements.txt"
         )
 
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=12)
+    # ── Extract all report fields ─────────────────────────────────────────────
     summary = report_data.get("summary", {})
     stream = report_data.get("stream_info", {})
     engine_info = report_data.get("engine", {})
@@ -2841,7 +3185,20 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     stream_count = int(summary.get("stream_count", stream.get("stream_count", 0)) or 0)
     video_stream_count = int(summary.get("video_stream_count", stream.get("video_stream_count", 0)) or 0)
     audio_stream_count = int(summary.get("audio_stream_count", stream.get("audio_stream_count", 0)) or 0)
+    drop_rate_pct = float(deep_drop.get("estimated_drop_rate_percent", 0.0) or 0.0)
+    startup_latency = float(deep.get("startup_latency_sec", 0.0) or 0.0)
+    freeze_total = float(deep_freeze.get("freeze_total_sec", 0.0) or 0.0)
+    missed_packets = int(deep_packet.get("rtp_missed_packets", 0) or 0)
+    fps_jitter_pct = float(deep_fps.get("jitter_percent_of_nominal", 0.0) or 0.0)
+    bw_avg = float(deep_bandwidth.get("avg", 0.0) or 0.0)
+    bw_p95 = float(deep_bandwidth.get("p95", 0.0) or 0.0)
+    run_ts = str(report_data.get("started_at", datetime.now().isoformat(timespec="seconds")))
+    rtsp_url = str(report_data.get("rtsp_url", ""))
+    run_id = str(report_data.get("run_id", ""))
+    wall_duration = float(report_data.get("wall_clock_duration_sec", 0.0) or 0.0)
+    req_duration = float(report_data.get("requested_duration_sec", 0.0) or 0.0)
 
+    # ── Colour palette ────────────────────────────────────────────────────────
     if status == "completed":
         status_color = (27, 94, 32)
     elif status == "failed":
@@ -2860,139 +3217,305 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
 
     drop_color = (229, 57, 53) if estimated_drops > 0 else (67, 160, 71)
     warn_color = (255, 152, 0) if warning_count > 0 else (67, 160, 71)
+    DARK_BLUE = (10, 30, 60)
+    ACCENT = (42, 157, 143)
+    LIGHT_GREY = (240, 244, 248)
+    MID_GREY = (180, 190, 200)
 
-    def draw_card(x: float, y: float, w: float, h: float, title: str, value: str, fill_rgb: tuple[int, int, int]) -> None:
-        pdf.set_fill_color(fill_rgb[0], fill_rgb[1], fill_rgb[2])
+    # ── PDF object ────────────────────────────────────────────────────────────
+    class _ReportPDF(FPDF):
+        """FPDF subclass that renders a running footer on every page."""
+        _report_title: str = APP_TITLE
+        _run_id: str = ""
+        _total_pages_placeholder: str = "{total_pages}"
+
+        def footer(self) -> None:
+            self.set_y(-11)
+            self.set_font("Helvetica", "", 7)
+            self.set_text_color(140, 150, 165)
+            left_text = f"{self._report_title}  |  Run: {self._run_id}"
+            self.cell(0, 5, left_text, align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            self.set_y(-8)
+            self.set_font("Helvetica", "", 7)
+            self.cell(0, 5, f"Page {self.page_no()}", align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            self.set_text_color(0, 0, 0)
+
+    pdf = _ReportPDF()
+    pdf._run_id = run_id
+    pdf.set_auto_page_break(auto=True, margin=16)
+
+    # ── Shared helpers ────────────────────────────────────────────────────────
+    def section_header(title: str, subtitle: str = "") -> None:
+        """Draw a coloured section banner with optional subtitle."""
+        pdf.set_fill_color(*ACCENT)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 9, f"  {title}", border=0, fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.set_text_color(0, 0, 0)
+        if subtitle:
+            pdf.set_font("Helvetica", "I", 8)
+            pdf.set_text_color(100, 110, 125)
+            pdf.cell(0, 5, f"  {subtitle}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_text_color(0, 0, 0)
+        pdf.ln(1)
+
+    def kv_row(label: str, value: str, label_w: float = 80, note: str = "") -> None:
+        """Print one key / value row, optionally with a short explanatory note."""
+        start_x = pdf.l_margin
+        start_y = pdf.get_y()
+        pdf.set_xy(start_x, start_y)
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(60, 70, 90)
+        pdf.multi_cell(label_w, 5.5, f"{label}:", border=0)
+        label_bottom = pdf.get_y()
+        pdf.set_xy(start_x + label_w + 2, start_y)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(0, 0, 0)
+        pdf.multi_cell(0, 5.5, str(value), border=0)
+        value_bottom = pdf.get_y()
+        pdf.set_y(max(label_bottom, value_bottom))
+        if note:
+            pdf.set_font("Helvetica", "I", 7.5)
+            pdf.set_text_color(130, 140, 155)
+            pdf.set_x(start_x + label_w + 2)
+            pdf.multi_cell(0, 4.5, note, border=0)
+            pdf.set_text_color(0, 0, 0)
+
+    def draw_card(x: float, y: float, w: float, h: float, title: str, value: str,
+                  fill_rgb: tuple[int, int, int], sub: str = "") -> None:
+        """Coloured KPI card with title, big value, and optional sub-label."""
+        pdf.set_fill_color(*fill_rgb)
         pdf.rect(x, y, w, h, style="F")
+        # subtle inner highlight bar
+        pdf.set_fill_color(255, 255, 255)
+        pdf.rect(x, y, w, 1.5, style="F")
         pdf.set_text_color(255, 255, 255)
         pdf.set_xy(x + 3, y + 3)
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.cell(w - 6, 6, title, ln=1)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(w - 6, 5, title, ln=1)
         pdf.set_x(x + 3)
         pdf.set_font("Helvetica", "B", 14)
         pdf.cell(w - 6, 9, value, ln=1)
+        if sub:
+            pdf.set_x(x + 3)
+            pdf.set_font("Helvetica", "", 7)
+            pdf.cell(w - 6, 5, sub, ln=1)
         pdf.set_text_color(0, 0, 0)
 
-    def add_per_second_detail_pages() -> None:
-        timeline = report_data.get("timeline", [])
-        if not timeline:
-            return
+    def horizontal_rule(r: int = 200, g: int = 210, b: int = 220) -> None:
+        pdf.set_draw_color(r, g, b)
+        pdf.set_line_width(0.3)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+        pdf.set_line_width(0.2)
+        pdf.ln(2)
 
-        elapsed_points = [float(item.get("analysis_elapsed_sec", item.get("elapsed_sec", 0.0)) or 0.0) for item in timeline]
-        frame_points = [float(item.get("frame", 0.0) or 0.0) for item in timeline]
-        drop_points = [float(item.get("estimated_drop_frames", 0.0) or 0.0) for item in timeline]
-        bandwidth_points = [float(item.get("bandwidth_kbps_current", 0.0) or 0.0) for item in timeline]
-        health_points = [int(item.get("health_score", 0) or 0) for item in timeline]
-        realtime_points = [float(item.get("fps_realtime_num", 0.0) or 0.0) for item in timeline]
-        wall_points = [
-            float(item.get("wall_elapsed_sec", item.get("analysis_elapsed_sec", item.get("elapsed_sec", 0.0))) or 0.0)
-            for item in timeline
-        ]
-        frame_intervals = cumulative_to_interval(frame_points)
-        drop_intervals = cumulative_to_interval(drop_points)
-        engine_requested = normalize_engine_mode(str(engine_info.get("requested", "ffmpeg")))
+    # ── Build narrative ───────────────────────────────────────────────────────
+    exec_summary, recommendations = _build_diagnosis_narrative(
+        health_score=health_score,
+        health_grade=health_grade,
+        estimated_drops=estimated_drops,
+        frames_received=frames_received,
+        warning_count=warning_count,
+        drop_rate=drop_rate_pct,
+        startup_latency=startup_latency,
+        freeze_total=freeze_total,
+        missed_packets=missed_packets,
+        fps_jitter=fps_jitter_pct,
+        bw_avg=bw_avg,
+        bw_p95=bw_p95,
+        status=status,
+    )
 
-        if engine_requested == "gstreamer":
-            columns = [
-                ("Sec", 18),
-                ("Rx", 16),
-                ("Rx/s", 20),
-                ("Drop", 18),
-                ("BW kbps", 28),
-                ("Drift", 24),
-                ("Health", 22),
-            ]
-        else:
-            columns = [
-                ("Sec", 18),
-                ("Rx", 16),
-                ("Rx/s", 20),
-                ("Drop", 18),
-                ("BW kbps", 28),
-                ("RT FPS", 24),
-                ("Health", 22),
-            ]
-
-        def start_page() -> None:
-            pdf.add_page()
-            pdf.set_font("Helvetica", "B", 12)
-            pdf.cell(0, 8, "Per-Second Diagnostics", ln=1)
-            pdf.set_font("Helvetica", "", 9)
-            pdf.multi_cell(0, 5, "Rows below are sampled from the engine telemetry at roughly 1-second intervals.", border=0)
-            pdf.ln(1)
-            pdf.set_font("Helvetica", "B", 8)
-            pdf.set_fill_color(230, 238, 248)
-            for title, width in columns:
-                pdf.cell(width, 6, title, border=1, fill=True)
-            pdf.ln(6)
-
-        start_page()
-        previous_elapsed = 0.0
-        for idx, elapsed in enumerate(elapsed_points):
-            if pdf.get_y() > pdf.h - pdf.b_margin - 8:
-                start_page()
-
-            delta_t = elapsed - previous_elapsed if idx > 0 else elapsed
-            delta_t = delta_t if delta_t > 0 else 1.0
-            interval_rx = int(round(frame_intervals[idx]))
-            interval_drop = int(round(drop_intervals[idx]))
-            interval_rx_fps = interval_rx / delta_t if delta_t > 0 else 0.0
-            bandwidth_value = bandwidth_points[idx]
-            health_value = health_points[idx]
-
-            if engine_requested == "gstreamer":
-                metric_text = f"{wall_points[idx] - elapsed:+.3f}s"
-            else:
-                metric_text = f"{realtime_points[idx]:.2f}"
-
-            row_values = [
-                f"{elapsed:.1f}",
-                str(int(round(frame_points[idx]))),
-                f"{interval_rx_fps:.2f}",
-                str(interval_drop),
-                f"{bandwidth_value:.1f}",
-                metric_text,
-                str(health_value),
-            ]
-
-            pdf.set_font("Helvetica", "", 8)
-            for (title, width), value in zip(columns, row_values):
-                pdf.cell(width, 5.5, value, border=1)
-            pdf.ln(5.5)
-            previous_elapsed = elapsed
-
+    # ══════════════════════════════════════════════════════════════════════════
+    #  COVER PAGE
+    # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 17)
-    pdf.cell(0, 10, APP_TITLE, ln=1)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, f"Generated: {datetime.now().isoformat(timespec='seconds')}", ln=1)
-    pdf.cell(0, 6, f"RTSP: {report_data.get('rtsp_url', '')}", ln=1)
+    # dark header band
+    pdf.set_fill_color(*DARK_BLUE)
+    pdf.rect(0, 0, pdf.w, 68, style="F")
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.set_xy(pdf.l_margin, 14)
+    pdf.cell(0, 12, APP_TITLE, ln=1)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.set_xy(pdf.l_margin, 30)
+    pdf.cell(0, 7, "CCTV / IP Camera Stream Health Report", ln=1)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_xy(pdf.l_margin, 42)
+    pdf.cell(0, 6, f"Generated: {run_ts}   |   Run ID: {run_id}", ln=1)
+    pdf.set_xy(pdf.l_margin, 52)
+    url_display = shorten_text(rtsp_url, 90)
+    pdf.cell(0, 6, f"Camera URL: {url_display}", ln=1)
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_y(76)
+
+    # ── Top-level KPI cards (row 1: 5 cards) ─────────────────────────────────
+    card_gap = 4.0
+    n_cards = 5
+    card_w = (pdf.w - 2 * pdf.l_margin - card_gap * (n_cards - 1)) / n_cards
+    y_cards = pdf.get_y()
+    card_h = 30
+
+    # Status
+    draw_card(pdf.l_margin, y_cards, card_w, card_h, "RUN STATUS",
+              status.upper(), status_color)
+    # Health
+    draw_card(pdf.l_margin + (card_w + card_gap), y_cards, card_w, card_h, "HEALTH SCORE",
+              str(health_score), health_color, sub=health_grade)
+    # Drop
+    total_frames = max(1, frames_received + estimated_drops)
+    drop_pct_display = f"{drop_rate_pct:.1f}%"
+    draw_card(pdf.l_margin + (card_w + card_gap) * 2, y_cards, card_w, card_h, "FRAMES DROPPED",
+              str(estimated_drops), drop_color, sub=drop_pct_display)
+    # Received
+    draw_card(pdf.l_margin + (card_w + card_gap) * 3, y_cards, card_w, card_h, "FRAMES RECEIVED",
+              str(frames_received), (30, 100, 160))
+    # Warnings
+    draw_card(pdf.l_margin + (card_w + card_gap) * 4, y_cards, card_w, card_h, "WARNINGS",
+              str(warning_count), warn_color)
+    pdf.set_y(y_cards + card_h + 5)
+
+    # ── Row 2: secondary KPI cards ────────────────────────────────────────────
+    n2 = 4
+    card_w2 = (pdf.w - 2 * pdf.l_margin - card_gap * (n2 - 1)) / n2
+    y2 = pdf.get_y()
+    card_h2 = 26
+
+    bw_avg_str = f"{bw_avg:.0f} kbps" if bw_avg > 0 else "N/A"
+    startup_str = f"{startup_latency:.1f}s" if startup_latency > 0 else "N/A"
+    freeze_str = f"{freeze_total:.1f}s" if freeze_total > 0 else "None"
+    fps_nom = float(summary.get("stream_nominal_fps", 0.0) or 0.0)
+    fps_str = f"{fps_nom:.2f}" if fps_nom > 0 else "N/A"
+
+    draw_card(pdf.l_margin, y2, card_w2, card_h2, "AVG BANDWIDTH", bw_avg_str,
+              (55, 100, 155), sub=f"P95: {bw_p95:.0f} kbps" if bw_p95 > 0 else "")
+    draw_card(pdf.l_margin + (card_w2 + card_gap), y2, card_w2, card_h2, "STARTUP LATENCY",
+              startup_str, (100, 80, 155) if startup_latency > 3 else (67, 160, 71))
+    draw_card(pdf.l_margin + (card_w2 + card_gap) * 2, y2, card_w2, card_h2, "FREEZE TIME",
+              freeze_str, (229, 57, 53) if freeze_total > 0 else (67, 160, 71))
+    draw_card(pdf.l_margin + (card_w2 + card_gap) * 3, y2, card_w2, card_h2, "NOMINAL FPS",
+              fps_str, (30, 100, 160))
+    pdf.set_y(y2 + card_h2 + 6)
+
+    # ── Executive Summary ─────────────────────────────────────────────────────
+    section_header("Executive Summary", "Plain-language diagnosis of this camera stream")
+    pdf.set_font("Helvetica", "", 9.5)
+    pdf.set_text_color(30, 40, 55)
+    pdf.multi_cell(0, 5.5, exec_summary, border=0, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.set_text_color(0, 0, 0)
     pdf.ln(2)
 
-    card_w = (pdf.w - (2 * pdf.l_margin) - 12) / 4.0
-    y_cards = pdf.get_y()
-    draw_card(pdf.l_margin, y_cards, card_w, 23, "Status", status.upper(), status_color)
-    draw_card(pdf.l_margin + card_w + 4, y_cards, card_w, 23, "Health", f"{health_score} ({health_grade})", health_color)
-    draw_card(pdf.l_margin + (card_w + 4) * 2, y_cards, card_w, 23, "Dropped", str(estimated_drops), drop_color)
-    draw_card(pdf.l_margin + (card_w + 4) * 3, y_cards, card_w, 23, "Warnings", str(warning_count), warn_color)
-    pdf.set_y(y_cards + 26)
+    # ── Recommendations ───────────────────────────────────────────────────────
+    section_header("Recommendations", "Action items to improve stream health")
+    for idx, rec in enumerate(recommendations, start=1):
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(60, 80, 110)
+        pdf.cell(7, 5.5, f"{idx}.", border=0)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(30, 40, 55)
+        pdf.multi_cell(0, 5.5, rec, border=0, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(0.5)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(2)
 
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Key Metrics", ln=1)
-    lines = [
+    # ══════════════════════════════════════════════════════════════════════════
+    #  PAGE 2 – TECHNICAL METRICS
+    # ══════════════════════════════════════════════════════════════════════════
+    pdf.add_page()
+    section_header("Key Technical Metrics", "Detailed measured values from the diagnostic run")
+
+    kv_rows: list[tuple[str, str, str]] = [
         (
-            "Engine (requested/validation/analytics)",
+            "Engine (req / validation / analytics)",
             (
                 f"{engine_info.get('requested', 'ffmpeg')} / "
                 f"{engine_info.get('validation_backend', 'ffprobe')} / "
                 f"{engine_info.get('analytics_backend', 'ffmpeg')}"
             ),
+            "The analysis engine used to capture and decode the stream.",
         ),
-        ("Diagnostic Model", deep_drop.get("diagnostic_model", "N/A")),
-        ("Codec / Resolution", f"{stream.get('codec_name', 'N/A')} / {stream.get('width', 0)}x{stream.get('height', 0)}"),
-        ("RTSP Transport (requested/selected)", f"{requested_transport} / {selected_transport}"),
-        ("Delivery (requested/selected)", f"{requested_delivery} / {selected_delivery}"),
-        ("Streams (total/video/audio)", f"{stream_count} / {video_stream_count} / {audio_stream_count}"),
+        ("Diagnostic Model", deep_drop.get("diagnostic_model", "N/A"),
+         "Algorithm used to estimate frame drops."),
+        (
+            "Codec / Resolution",
+            f"{stream.get('codec_name', 'N/A')} / {stream.get('width', 0)}x{stream.get('height', 0)}",
+            "Video codec and resolution reported by the stream.",
+        ),
+        (
+            "RTSP Transport (req / selected)",
+            f"{requested_transport} / {selected_transport}",
+            "TCP is more reliable; UDP has lower latency but is prone to loss.",
+        ),
+        (
+            "Delivery mode (req / selected)",
+            f"{requested_delivery} / {selected_delivery}",
+            "Unicast = direct connection; multicast = shared group stream.",
+        ),
+        (
+            "Streams (total / video / audio)",
+            f"{stream_count} / {video_stream_count} / {audio_stream_count}",
+            "",
+        ),
+        (
+            "Duration (req / media / wall sec)",
+            f"{req_duration} / {summary.get('media_elapsed_sec', 'N/A')} / {wall_duration:.1f}",
+            "Wall time close to media time = real-time delivery (healthy).",
+        ),
+        ("Nominal FPS", str(summary.get("stream_nominal_fps", "N/A")),
+         "Frame rate the camera reports in its stream metadata."),
+        (
+            "Frames Received / Expected",
+            f"{frames_received} / {summary.get('expected_frames', 'N/A')}",
+            "Expected = nominal FPS × run duration. Gap = estimated drops.",
+        ),
+        (
+            "Estimated Drop Rate",
+            f"{drop_rate_pct:.3f}%",
+            ">5% is problematic; >10% severely impacts recording quality.",
+        ),
+        (
+            "FFmpeg-reported drops / dups",
+            f"{summary.get('ffmpeg_reported_dropped_frames', 'N/A')} / "
+            f"{summary.get('ffmpeg_reported_duplicated_frames', 'N/A')}",
+            "Cross-check from FFmpeg's own drop/duplicate counters.",
+        ),
+        (
+            "Bandwidth (avg / min / max kbps)",
+            f"{deep_bandwidth.get('avg', 'N/A')} / {deep_bandwidth.get('min', 'N/A')} / "
+            f"{deep_bandwidth.get('max', 'N/A')}",
+            "Higher max-to-avg ratio = more variable bitrate (common with H.264/H.265 B-frames).",
+        ),
+        ("Bandwidth P95 (kbps)", str(deep_bandwidth.get("p95", "N/A")),
+         "95th-percentile bandwidth - size your network headroom to at least this value."),
+        ("Bandwidth Source", deep_bandwidth.get("source", "N/A"), ""),
+        (
+            "Startup Latency (sec)",
+            f"{startup_latency:.3f}",
+            "Time between process start and first frame. >3s may indicate camera delay or network RTT.",
+        ),
+        (
+            "FPS Jitter (% of nominal)",
+            f"{fps_jitter_pct:.3f}%",
+            "<5% is excellent; >15% indicates unstable encoding or delivery timing.",
+        ),
+        (
+            "Realtime FPS (avg / min / max)",
+            f"{deep_fps.get('realtime_fps_avg', 'N/A')} / {deep_fps.get('realtime_fps_min', 'N/A')} / "
+            f"{deep_fps.get('realtime_fps_max', 'N/A')}",
+            "Realtime FPS measured by the decoder. Should stay near nominal.",
+        ),
+        (
+            "Freeze (events / total sec / ratio)",
+            f"{deep_freeze.get('freeze_events_count', 'N/A')} / "
+            f"{deep_freeze.get('freeze_total_sec', 'N/A')}s / "
+            f"{deep_freeze.get('freeze_ratio_percent', 'N/A')}%",
+            "Any freeze >0.5s per event may cause recording gaps.",
+        ),
+        (
+            "RTP Missed Packets",
+            str(deep_packet.get("rtp_missed_packets", "N/A")),
+            ">0 indicates UDP packet loss. Switch to TCP transport to eliminate this.",
+        ),
         (
             "GStreamer Validation",
             (
@@ -3004,168 +3527,166 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
                     f"{gst_probe.get('transport', selected_transport).upper()}"
                 )
             ),
+            "",
         ),
-        ("Nominal FPS", summary.get("stream_nominal_fps", "N/A")),
-        ("Frames Received / Expected", f"{frames_received} / {summary.get('expected_frames', 'N/A')}"),
-        ("Estimated Drop Rate (%)", deep_drop.get("estimated_drop_rate_percent", "N/A")),
-        ("Bandwidth Source", deep_bandwidth.get("source", "N/A")),
         (
             "Drop Normalization",
-            f"startup bias removed={drop_norm.get('startup_bias_frames_removed', 0)} frames, "
-            f"duration capped={drop_norm.get('analysis_duration_capped_to_requested_duration', False)}, "
-            f"tail end snapshot ignored={drop_norm.get('tail_end_snapshot_ignored_when_no_new_frames', False)}",
+            f"Startup bias removed={drop_norm.get('startup_bias_frames_removed', 0)} frames; "
+            f"Duration capped={drop_norm.get('analysis_duration_capped_to_requested_duration', False)}; "
+            f"Tail-end snapshot ignored={drop_norm.get('tail_end_snapshot_ignored_when_no_new_frames', False)}",
+            "Edge adjustments applied to the drop estimate to remove false positives.",
         ),
-        ("Bandwidth (avg/min/max kbps)", f"{deep_bandwidth.get('avg', 'N/A')} / {deep_bandwidth.get('min', 'N/A')} / {deep_bandwidth.get('max', 'N/A')}"),
-        ("Bandwidth P95 (kbps)", deep_bandwidth.get("p95", "N/A")),
-        ("Startup Latency (sec)", deep.get("startup_latency_sec", "N/A")),
-        ("FPS Jitter (% of nominal)", deep_fps.get("jitter_percent_of_nominal", "N/A")),
-        ("Freeze Total / Ratio", f"{deep_freeze.get('freeze_total_sec', 'N/A')} sec / {deep_freeze.get('freeze_ratio_percent', 'N/A')}%"),
-        ("RTP Missed Packets", deep_packet.get("rtp_missed_packets", "N/A")),
-        ("Duration (requested/media/wall sec)", f"{report_data.get('requested_duration_sec', 'N/A')} / {summary.get('media_elapsed_sec', 'N/A')} / {report_data.get('wall_clock_duration_sec', 'N/A')}"),
     ]
-    for label, value in lines:
-        start_x = pdf.l_margin
-        start_y = pdf.get_y()
-        label_w = 84
+    for label, value, note in kv_rows:
+        kv_row(label, value, note=note)
+        horizontal_rule()
 
-        pdf.set_xy(start_x, start_y)
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.multi_cell(label_w, 6, f"{label}:", border=0)
-        label_bottom = pdf.get_y()
-
-        pdf.set_xy(start_x + label_w + 2, start_y)
-        pdf.set_font("Helvetica", "", 10)
-        pdf.multi_cell(0, 6, str(value), border=0)
-        value_bottom = pdf.get_y()
-
-        pdf.set_y(max(label_bottom, value_bottom))
-
+    # ── Transport probe ───────────────────────────────────────────────────────
+    _transport_notes = {
+        "tcp": "TCP is the most reliable transport - recommended for high-quality recording.",
+        "udp": "UDP has lower latency but packets may be lost on congested networks.",
+        "udp_multicast": "Multicast: efficient for many viewers but may not traverse all switches.",
+    }
     if transport_tests:
-        pdf.ln(1)
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 7, "Transport Probe Diagnostics", ln=1)
+        pdf.ln(2)
+        section_header("Transport Probe Results",
+                        "Tests each RTSP transport to find the best path to the camera")
         for mode in RTSP_TRANSPORT_PROBE_CANDIDATES:
             test = transport_tests.get(mode, {})
             ok = bool(test.get("ok", False))
             scount = int(test.get("stream_count", 0) or 0)
             err = str(test.get("error", "") or "")
             status_text = "OK" if ok else "FAILED"
-            if ok:
-                detail = f"{status_text}, streams={scount}"
-            else:
-                detail = f"{status_text}, {err or 'No details'}"
-            start_x = pdf.l_margin
-            start_y = pdf.get_y()
-            mode_w = 30
+            detail = f"{status_text}  |  streams={scount}" if ok else f"{status_text}  |  {err or 'No details'}"
+            note = _transport_notes.get(mode, "")
+            kv_row(mode.upper(), detail, label_w=28, note=note)
+            horizontal_rule()
 
-            pdf.set_xy(start_x, start_y)
-            pdf.set_font("Helvetica", "B", 10)
-            pdf.multi_cell(mode_w, 6, f"{mode.upper()}:", border=0)
-            mode_bottom = pdf.get_y()
-
-            pdf.set_xy(start_x + mode_w + 2, start_y)
-            pdf.set_font("Helvetica", "", 10)
-            pdf.multi_cell(0, 6, detail, border=0)
-            detail_bottom = pdf.get_y()
-
-            pdf.set_y(max(mode_bottom, detail_bottom))
-
+    # ── GStreamer section ─────────────────────────────────────────────────────
     if engine_info.get("requested", "ffmpeg") == "gstreamer":
-        pdf.ln(1)
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 7, "GStreamer Diagnostics", ln=1)
+        pdf.ln(2)
+        section_header("GStreamer Diagnostics",
+                        "Details from the GStreamer pipeline used for this diagnostic run")
         packet_stats = gst_runtime.get("packet_stats", {})
         packet_text = (
-            " / ".join(f"{key}={value}" for key, value in packet_stats.items() if value)
+            " / ".join(f"{k}={v}" for k, v in packet_stats.items() if v)
             if packet_stats
-            else "No RTP counters emitted by this GStreamer runtime for this stream."
+            else "No RTP counters emitted by this GStreamer runtime."
         )
-        progress_phases = ", ".join(gst_runtime.get("progress_phases", [])) or "N/A"
-        rtp_chain = ", ".join(gst_runtime.get("rtp_elements", [])) or "N/A"
-        decode_chain = ", ".join(gst_runtime.get("decode_elements", [])) or "N/A"
-        gst_lines = [
-            ("Status", "OK" if gst_probe.get("ok") else "FAILED"),
-            ("Discoverer", stream.get("discovery_backend", "N/A")),
-            ("Launch Binary", Path(str(gst_runtime.get("launch_binary", gst_probe.get("binary", "gstreamer")))).name),
-            ("Transport", str(gst_probe.get("transport", selected_transport)).upper()),
-            ("Startup Check (sec)", gst_probe.get("startup_check_sec", "N/A")),
-            ("Decoder Element", gst_runtime.get("decoder_element", "auto")),
-            ("Device Context", gst_runtime.get("device_context", "software/auto")),
-            ("Bitrate Source", gst_runtime.get("bitrate_source", deep_bandwidth.get("source", "N/A"))),
+        gst_pairs: list[tuple[str, str, str]] = [
+            ("Status", "OK" if gst_probe.get("ok") else "FAILED", ""),
+            ("Discoverer", stream.get("discovery_backend", "N/A"), ""),
+            ("Launch Binary",
+             Path(str(gst_runtime.get("launch_binary", gst_probe.get("binary", "gstreamer")))).name, ""),
+            ("Transport", str(gst_probe.get("transport", selected_transport)).upper(), ""),
+            ("Startup Check (sec)", str(gst_probe.get("startup_check_sec", "N/A")), ""),
+            ("Decoder Element", gst_runtime.get("decoder_element", "auto"), ""),
+            ("Device Context", gst_runtime.get("device_context", "software/auto"), ""),
+            ("Bitrate Source", gst_runtime.get("bitrate_source", deep_bandwidth.get("source", "N/A")), ""),
             (
-                "Wall Clock Drift (avg/max sec)",
+                "Wall Clock Drift (avg / max sec)",
                 f"{deep_drop.get('gstreamer_wall_clock_drift_sec_avg', 0)} / "
                 f"{deep_drop.get('gstreamer_wall_clock_drift_sec_max', 0)}",
+                "Drift >0.5s may indicate buffering or clock skew issues.",
             ),
-            ("Packet Stats", packet_text),
-            ("Progress Phases", progress_phases),
-            ("RTP Chain", rtp_chain),
-            ("Decode Chain", decode_chain),
+            ("Packet Stats", packet_text, ""),
+            ("Progress Phases", ", ".join(gst_runtime.get("progress_phases", [])) or "N/A", ""),
+            ("RTP Chain", ", ".join(gst_runtime.get("rtp_elements", [])) or "N/A", ""),
+            ("Decode Chain", ", ".join(gst_runtime.get("decode_elements", [])) or "N/A", ""),
         ]
         gst_error = str(gst_probe.get("error", "") or "")
         if gst_error:
-            gst_lines.append(("Error", gst_error))
-        for label, value in gst_lines:
-            start_x = pdf.l_margin
-            start_y = pdf.get_y()
-            label_w = 38
+            gst_pairs.append(("Error", gst_error, ""))
+        for label, value, note in gst_pairs:
+            kv_row(label, value, label_w=44, note=note)
+            horizontal_rule()
 
-            pdf.set_xy(start_x, start_y)
-            pdf.set_font("Helvetica", "B", 10)
-            pdf.multi_cell(label_w, 6, f"{label}:", border=0)
-            label_bottom = pdf.get_y()
-
-            pdf.set_xy(start_x + label_w + 2, start_y)
-            pdf.set_font("Helvetica", "", 10)
-            pdf.multi_cell(0, 6, str(value), border=0)
-            value_bottom = pdf.get_y()
-
-            pdf.set_y(max(label_bottom, value_bottom))
-
-    error = report_data.get("error")
-    if error:
+    # ── Run error ─────────────────────────────────────────────────────────────
+    run_error = report_data.get("error")
+    if run_error:
         pdf.ln(1)
-        pdf.set_font("Helvetica", "B", 11)
+        pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(183, 28, 28)
-        pdf.multi_cell(0, 7, f"Run Error: {error}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.multi_cell(0, 6, f"Run Error: {run_error}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_text_color(0, 0, 0)
 
     with tempfile.TemporaryDirectory(prefix="rtsp_diag_charts_") as tmp_dir:
         chart_paths = generate_report_charts(report_data, Path(tmp_dir))
         if chart_paths:
-            def place_chart(title: str, key: str, height: float) -> None:
+            def place_chart(title: str, key: str, height: float, subtitle: str = "") -> None:
                 chart_path = chart_paths.get(key)
                 if not chart_path or not Path(chart_path).exists():
                     return
-                if pdf.get_y() > pdf.h - pdf.b_margin - height - 12:
+                if pdf.get_y() > pdf.h - pdf.b_margin - height - 18:
                     pdf.add_page()
-                pdf.set_font("Helvetica", "B", 11)
-                pdf.cell(0, 7, title, ln=1)
+                pdf.set_font("Helvetica", "B", 10)
+                pdf.set_text_color(30, 40, 60)
+                pdf.cell(0, 6, title, ln=1)
+                if subtitle:
+                    pdf.set_font("Helvetica", "I", 8)
+                    pdf.set_text_color(100, 110, 130)
+                    pdf.cell(0, 4.5, subtitle, ln=1)
+                    pdf.set_text_color(0, 0, 0)
+                pdf.ln(0.5)
                 chart_y = pdf.get_y()
                 pdf.image(chart_path, x=pdf.l_margin, y=chart_y, w=pdf.w - (2 * pdf.l_margin), h=height)
-                pdf.set_y(chart_y + height + 4)
+                pdf.set_y(chart_y + height + 5)
 
             pdf.add_page()
-            pdf.set_font("Helvetica", "B", 12)
-            pdf.cell(0, 8, "Timeline Charts", ln=1)
-            place_chart("Live Dashboard Graph", "timeline_frames", 74)
-            place_chart("Expected vs Received Frames", "expected_vs_received", 72)
-            place_chart("Quality Timeline", "timeline_performance", 74)
-            place_chart("Drop Timeline", "drop_timeline", 74)
+            section_header("Timeline Charts", "Chronological metrics captured throughout the diagnostic run")
+            place_chart(
+                "Live Dashboard Graph",
+                "timeline_frames",
+                78,
+                subtitle="Green = frames captured per interval, Red = frames dropped, Blue line = bandwidth (kbps)",
+            )
+            place_chart(
+                "Expected vs Received Frames",
+                "expected_vs_received",
+                76,
+                subtitle="Orange shaded area = cumulative gap between expected and received frames",
+            )
+            place_chart(
+                "Quality Timeline - FPS & Health Score",
+                "timeline_performance",
+                80,
+                subtitle="Top panel: realtime FPS;  Bottom panel: health score with zone bands (green=excellent, red=poor)",
+            )
+            place_chart(
+                "Drop Timeline",
+                "drop_timeline",
+                80,
+                subtitle="Top panel: cumulative drops;  Bottom panel: drops per sample interval + instantaneous drop rate %",
+            )
 
             if any(chart_paths.get(key) for key in ("bandwidth_distribution", "media_vs_wall", "frame_distribution", "warning_categories")):
                 pdf.add_page()
-                pdf.set_font("Helvetica", "B", 12)
-                pdf.cell(0, 8, "Distribution And Detail Charts", ln=1)
-                place_chart("Bandwidth Distribution", "bandwidth_distribution", 62)
-                place_chart("Media Clock vs Wall Clock", "media_vs_wall", 68)
+                section_header("Distribution & Detail Charts", "Statistical breakdown of key metrics")
+                place_chart(
+                    "Bandwidth Distribution",
+                    "bandwidth_distribution",
+                    66,
+                    subtitle="Histogram of bandwidth samples. Orange line=mean, green=median, red=P95.",
+                )
+                place_chart(
+                    "Media Clock vs Wall Clock",
+                    "media_vs_wall",
+                    72,
+                    subtitle="Gap between lines = clock drift. Large drift = potential buffering or sync issues.",
+                )
                 if chart_paths.get("frame_distribution") and Path(chart_paths["frame_distribution"]).exists():
                     if pdf.get_y() > pdf.h - pdf.b_margin - 84:
                         pdf.add_page()
-                    pdf.set_font("Helvetica", "B", 11)
-                    pdf.cell(0, 7, "Frame Distribution", ln=1)
+                    pdf.set_font("Helvetica", "B", 10)
+                    pdf.set_text_color(30, 40, 60)
+                    pdf.cell(0, 6, "Frame Distribution & Warning Categories", ln=1)
+                    pdf.set_font("Helvetica", "I", 8)
+                    pdf.set_text_color(100, 110, 130)
+                    pdf.cell(0, 4.5, "Pie = share of received vs dropped frames;  Bar chart = warning breakdown by type", ln=1)
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.ln(1)
                     chart_y = pdf.get_y()
-                    pie_w = 88
+                    pie_w = 84
                     pdf.image(chart_paths["frame_distribution"], x=pdf.l_margin, y=chart_y, w=pie_w)
                     warn_chart = chart_paths.get("warning_categories")
                     if warn_chart and Path(warn_chart).exists():
@@ -3175,73 +3696,82 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
                             y=chart_y,
                             w=(pdf.w - 2 * pdf.l_margin - pie_w - 6),
                         )
-                    pdf.set_y(chart_y + 76)
+                    pdf.set_y(chart_y + 78)
         else:
             pdf.add_page()
-            pdf.set_font("Helvetica", "B", 12)
-            pdf.cell(0, 8, "Timeline Charts", ln=1)
+            section_header("Timeline Charts", "")
             pdf.set_font("Helvetica", "", 10)
             pdf.multi_cell(
                 0,
                 6,
-                "Chart rendering was unavailable for this report. This usually means timeline data was missing or the chart backend was not available in the current runtime.",
+                "Chart rendering was unavailable for this report. This usually means timeline data was missing "
+                "or the chart backend was not available in the current runtime.",
                 new_x=XPos.LMARGIN,
                 new_y=YPos.NEXT,
             )
 
         if snapshot_path and Path(snapshot_path).exists():
             pdf.add_page()
-            pdf.set_font("Helvetica", "B", 12)
-            pdf.cell(0, 8, "Camera Snapshot", ln=1)
-            pdf.set_font("Helvetica", "", 10)
-            pdf.cell(0, 6, f"Source image: {snapshot_path}", ln=1)
+            section_header("Camera Snapshot", "Live frame captured from the camera at diagnostic time")
+            pdf.set_font("Helvetica", "", 8.5)
+            pdf.set_text_color(100, 110, 130)
+            pdf.cell(0, 5, f"Source: {snapshot_path}", ln=1)
+            pdf.set_text_color(0, 0, 0)
             pdf.ln(2)
             max_w = pdf.w - (2 * pdf.l_margin)
             pdf.image(snapshot_path, x=pdf.l_margin, y=pdf.get_y(), w=max_w)
         elif snapshot_error:
             pdf.add_page()
-            pdf.set_font("Helvetica", "B", 12)
-            pdf.cell(0, 8, "Camera Snapshot", ln=1)
+            section_header("Camera Snapshot", "")
             pdf.set_font("Helvetica", "", 10)
             pdf.multi_cell(0, 6, f"Snapshot unavailable: {snapshot_error}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
-    add_per_second_detail_pages()
+    _add_per_second_detail_pages(pdf, report_data, engine_info)
 
     stream_inventory = stream.get("streams", [])
     if stream_inventory:
         pdf.add_page()
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 8, "Stream Inventory", ln=1)
-        pdf.set_font("Helvetica", "", 10)
+        section_header("Stream Inventory", "All media streams found in this RTSP source")
+        pdf.set_font("Helvetica", "", 9.5)
         for stream_item in stream_inventory:
             idx = int(stream_item.get("index", 0) or 0)
             ctype = str(stream_item.get("codec_type", "unknown") or "unknown")
             codec = str(stream_item.get("codec_name", "unknown") or "unknown")
             bitrate = float(stream_item.get("bit_rate_kbps", 0.0) or 0.0)
-            line = f"#{idx} [{ctype}] {codec}"
+            line = f"#{idx}  [{ctype.upper()}]  {codec.upper()}"
             if ctype == "video":
                 line += (
-                    f" | {stream_item.get('width', 0)}x{stream_item.get('height', 0)}"
-                    f" | {stream_item.get('fps', 0.0)} FPS"
+                    f"  |  {stream_item.get('width', 0)}x{stream_item.get('height', 0)}"
+                    f"  |  {stream_item.get('fps', 0.0)} FPS"
                 )
             elif ctype == "audio":
                 line += (
-                    f" | {stream_item.get('sample_rate_hz', 0)} Hz"
-                    f" | ch={stream_item.get('channels', 0)}"
+                    f"  |  {stream_item.get('sample_rate_hz', 0)} Hz"
+                    f"  |  ch={stream_item.get('channels', 0)}"
                 )
             if bitrate > 0:
-                line += f" | {bitrate:.1f} kbps"
+                line += f"  |  {bitrate:.1f} kbps"
             pdf.multi_cell(0, 6, line, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            horizontal_rule()
 
     warning_samples = report_data.get("warning_samples", [])
     if warning_samples:
         pdf.add_page()
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 8, "Warning Samples", ln=1)
-        pdf.set_font("Helvetica", "", 10)
+        section_header("Warning Samples", "Raw warning/error log lines captured during the run")
+        pdf.set_font("Helvetica", "I", 8)
+        pdf.set_text_color(120, 130, 145)
+        pdf.multi_cell(
+            0, 4.5,
+            "These are the first warnings logged during the run. Use them to diagnose camera, "
+            "codec, or network-level errors.",
+            new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+        )
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(1)
+        pdf.set_font("Helvetica", "", 8)
         for idx, warning_line in enumerate(warning_samples, start=1):
             pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(0, 6, f"{idx}. {warning_line}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.multi_cell(0, 5, f"{idx}.  {warning_line}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     pdf.output(str(report_path))
 
