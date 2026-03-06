@@ -1,20 +1,37 @@
 # -*- mode: python ; coding: utf-8 -*-
+# One-folder EXE build specification for RTSP Camera Diagnostic Tool.
+# Produces a folder distribution with lower AV false-positive risk.
+# Build with:  python -m PyInstaller RTSP-Camera-Diagnostic-Folder.spec
 
+block_cipher = None
 
 a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets\\camera_icon.png', 'assets'), ('assets\\camera_icon.ico', 'assets')],
-    hiddenimports=[],
+    datas=[
+        ('assets\\camera_icon.png', 'assets'),
+        ('assets\\camera_icon.ico', 'assets'),
+    ],
+    hiddenimports=[
+        'fpdf',
+        'fpdf.enums',
+        'matplotlib',
+        'matplotlib.pyplot',
+        'matplotlib.backends.backend_agg',
+        'PIL',
+        'PIL.Image',
+        'PIL.ImageDraw',
+        'PIL.ImageFont',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['test', 'pytest', 'tkinter.test'],
     noarchive=False,
     optimize=0,
 )
-pyz = PYZ(a.pure)
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,

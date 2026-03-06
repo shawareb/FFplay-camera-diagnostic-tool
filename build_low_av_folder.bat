@@ -2,21 +2,27 @@
 setlocal
 cd /d "%~dp0"
 
-echo Installing runtime dependencies...
-python -m pip install -r requirements.txt
+echo ====================================================
+echo  RTSP Camera Diagnostic Tool - Folder Build
+echo  (Lower AV false-positive risk than single-file EXE)
+echo ====================================================
+echo.
+
+echo [1/3] Installing runtime dependencies...
+python -m pip install -r requirements.txt --upgrade
 if errorlevel 1 (
-  echo Failed to install requirements.
+  echo ERROR: Failed to install requirements.
   exit /b 1
 )
 
-echo Installing PyInstaller...
-python -m pip install pyinstaller
+echo [2/3] Installing PyInstaller...
+python -m pip install pyinstaller --upgrade
 if errorlevel 1 (
-  echo Failed to install PyInstaller.
+  echo ERROR: Failed to install PyInstaller.
   exit /b 1
 )
 
-echo Building one-folder EXE package (lower AV false-positive risk)...
+echo [3/3] Building one-folder EXE package...
 python -m PyInstaller ^
   --noconfirm ^
   --clean ^
@@ -26,14 +32,27 @@ python -m PyInstaller ^
   --icon "assets\camera_icon.ico" ^
   --add-data "assets\camera_icon.png;assets" ^
   --add-data "assets\camera_icon.ico;assets" ^
+  --hidden-import fpdf ^
+  --hidden-import fpdf.enums ^
+  --hidden-import matplotlib ^
+  --hidden-import matplotlib.pyplot ^
+  --hidden-import matplotlib.backends.backend_agg ^
+  --hidden-import PIL ^
+  --hidden-import PIL.Image ^
+  --hidden-import PIL.ImageDraw ^
+  --hidden-import PIL.ImageFont ^
   --name "RTSP-Camera-Diagnostic-Folder" ^
   app.py
 
 if errorlevel 1 (
-  echo Build failed.
+  echo ERROR: Build failed. See output above for details.
   exit /b 1
 )
 
-echo Build completed.
-echo Output folder: %~dp0dist\RTSP-Camera-Diagnostic-Folder\
+echo.
+echo ====================================================
+echo  Build COMPLETE!
+echo  Output folder: %~dp0dist\RTSP-Camera-Diagnostic-Folder\
+echo  Run: %~dp0dist\RTSP-Camera-Diagnostic-Folder\RTSP-Camera-Diagnostic-Folder.exe
+echo ====================================================
 endlocal
