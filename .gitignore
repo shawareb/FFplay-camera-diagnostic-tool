@@ -1,0 +1,8 @@
+﻿/build/
+/__pycache__/
+*.pyc
+/dist/*
+!/dist/RTSP-Camera-Diagnostic-Portable.exe
+!/dist/Install-On-Other-PC.ps1
+!/dist/README-DEPLOY.txt
+/reports/
