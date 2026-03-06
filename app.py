@@ -1,3 +1,33 @@
+"""
+RTSP Camera Frame Drop Diagnostic
+==================================
+A Windows desktop tool that diagnoses the health of CCTV / IP cameras over
+a network using FFmpeg or GStreamer as the back-end engine.
+
+Features
+--------
+- Real-time metrics: frames received, estimated drops, bandwidth, FPS jitter,
+  startup latency, missed RTP packets, stream health score (0–100).
+- RTSP transport probing: tests TCP, UDP-unicast, and UDP-multicast so you
+  know which paths work before committing to a full run.
+- PDF + JSON reports with KPI cards, timeline charts, bandwidth distribution,
+  frame-distribution pie chart, warning category chart, and a live snapshot.
+- Optional FFplay or GStreamer side-by-side live preview window.
+- No-audio (video-only) cameras are fully supported.
+- Passwords containing reserved URL characters (e.g. ``@``) are
+  automatically percent-encoded before they are passed to subprocesses.
+
+Usage
+-----
+Run directly::
+
+    python app.py
+
+Or double-click ``run_diagnostic_tool.bat``.
+
+See README.md for full documentation, screenshots, and deployment notes.
+"""
+
 import json
 import os
 import queue
