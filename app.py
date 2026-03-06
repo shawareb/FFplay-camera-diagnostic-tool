@@ -74,6 +74,9 @@ except Exception:
 
 
 APP_TITLE = "RTSP Camera Frame Drop Diagnostic"
+APP_VERSION = "1.1.0"
+# BUILD_DATE is the release date for this version; bump together with APP_VERSION on each release.
+BUILD_DATE = "2026-03-06"
 MAX_WARNING_SAMPLES = 30
 LIVE_CHART_MAX_POINTS = 180
 DIAGNOSTIC_ENGINES = ("ffmpeg", "gstreamer")
@@ -2839,6 +2842,8 @@ class DiagnosticWorker(threading.Thread):
 
         return {
             "app": APP_TITLE,
+            "version": APP_VERSION,
+            "build_date": BUILD_DATE,
             "run_id": self.context.run_id,
             "engine": {
                 "requested": engine_mode,
@@ -3342,7 +3347,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     pdf.cell(0, 7, "CCTV / IP Camera Stream Health Report", ln=1)
     pdf.set_font("Helvetica", "", 9)
     pdf.set_xy(pdf.l_margin, 42)
-    pdf.cell(0, 6, f"Generated: {run_ts}   |   Run ID: {run_id}", ln=1)
+    pdf.cell(0, 6, f"Generated: {run_ts}   |   Run ID: {run_id}   |   v{APP_VERSION} ({BUILD_DATE})", ln=1)
     pdf.set_xy(pdf.l_margin, 52)
     url_display = shorten_text(rtsp_url, 90)
     pdf.cell(0, 6, f"Camera URL: {url_display}", ln=1)
@@ -4038,7 +4043,7 @@ class CombinedLiveChartCard(ttk.LabelFrame):
 class DiagnosticApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title(APP_TITLE)
+        self.root.title(f"{APP_TITLE}  v{APP_VERSION}  (Build {BUILD_DATE})")
         self.root.geometry(self._initial_window_geometry())
         self.root.minsize(860, 620)
         self._icon_img = None
@@ -4215,7 +4220,14 @@ class DiagnosticApp:
             text="RTSP Camera Frame Drop Diagnostic",
             font=("Segoe UI Semibold", 14),
         )
-        header.pack(anchor="w", pady=(0, 8))
+        header.pack(anchor="w", pady=(0, 2))
+
+        version_label = ttk.Label(
+            wrapper,
+            text=f"v{APP_VERSION}  —  Build {BUILD_DATE}",
+            font=("Segoe UI", 9),
+        )
+        version_label.pack(anchor="w", pady=(0, 8))
 
         input_frame = ttk.LabelFrame(wrapper, text="Test Input", padding=10)
         input_frame.pack(fill=tk.X)
