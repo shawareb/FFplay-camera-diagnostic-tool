@@ -1,4 +1,4 @@
-"""
+﻿"""
 RTSP Camera Frame Drop Diagnostic
 ==================================
 A Windows desktop tool that diagnoses the health of CCTV / IP cameras over
@@ -7,7 +7,7 @@ a network using FFmpeg or GStreamer as the back-end engine.
 Features
 --------
 - Real-time metrics: frames received, estimated drops, bandwidth, FPS jitter,
-  startup latency, missed RTP packets, stream health score (0–100).
+  startup latency, missed RTP packets, stream health score (0â€“100).
 - RTSP transport probing: tests TCP, UDP-unicast, and UDP-multicast so you
   know which paths work before committing to a full run.
 - PDF + JSON reports with KPI cards, timeline charts, bandwidth distribution,
@@ -667,7 +667,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
                 va="bottom",
                 alpha=0.85,
             )
-        ax1.set_title("Live Dashboard  —  Frames Received vs Dropped + Bandwidth", color="#F8FAFC", fontsize=11, pad=6)
+        ax1.set_title("Live Dashboard  â€”  Frames Received vs Dropped + Bandwidth", color="#F8FAFC", fontsize=11, pad=6)
         ax1.set_xlabel("Elapsed Time (sec)", color="#E0E1DD")
         ax1.set_ylabel("Frames per Sample Interval", color="#E0E1DD")
         ax1.grid(True, axis="y", alpha=0.20, color="#37506B")
@@ -736,7 +736,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         gap = max(0.0, final_expected - final_received)
         gap_pct = (gap / final_expected * 100.0) if final_expected > 0 else 0.0
         ax_expected.set_title(
-            f"Expected vs Received Frames  —  Final gap: {gap:.0f} frames ({gap_pct:.1f}%)",
+            f"Expected vs Received Frames  â€”  Final gap: {gap:.0f} frames ({gap_pct:.1f}%)",
             fontsize=11, pad=6,
         )
         ax_expected.set_xlabel("Elapsed Time (sec)")
@@ -760,7 +760,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         if avg_fps > 0:
             ax_mid.axhline(avg_fps, color="#2A9D8F", linewidth=1.0, linestyle="--", alpha=0.60, label=f"Avg {avg_fps:.1f} FPS")
         ax_mid.set_ylabel("Realtime FPS")
-        ax_mid.set_title("Quality Timeline  —  FPS & Health Score over Time", pad=6)
+        ax_mid.set_title("Quality Timeline  â€”  FPS & Health Score over Time", pad=6)
         ax_mid.legend(loc="upper right", fontsize=8)
         ax_mid.grid(True, alpha=0.25)
 
@@ -774,7 +774,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         ax_bot.axhline(90, color="#2dc653", linewidth=0.8, linestyle=":", alpha=0.7)
         ax_bot.axhline(75, color="#80c900", linewidth=0.8, linestyle=":", alpha=0.7)
         ax_bot.axhline(55, color="#e63946", linewidth=0.8, linestyle=":", alpha=0.7)
-        ax_bot.set_ylabel("Health Score (0–100)")
+        ax_bot.set_ylabel("Health Score (0â€“100)")
         ax_bot.set_xlabel("Elapsed Time (sec)")
         ax_bot.set_ylim(0, 105)
         ax_bot.grid(True, alpha=0.20)
@@ -795,7 +795,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         ax_drop_top.fill_between(x, drops, color="#E63946", alpha=0.16)
         final_drops = drops[-1] if drops else 0
         ax_drop_top.set_ylabel("Cumulative Drops")
-        ax_drop_top.set_title(f"Drop Timeline  —  Total dropped: {final_drops:.0f} frames", pad=6)
+        ax_drop_top.set_title(f"Drop Timeline  â€”  Total dropped: {final_drops:.0f} frames", pad=6)
         ax_drop_top.grid(True, alpha=0.25)
         ax_drop_bottom.bar(x_plot, dropped_interval_plot, color="#F94144", alpha=0.75, label="Drops / Interval")
         ax_drop_bottom.plot(
@@ -837,7 +837,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
             ax_bw.axvline(bw_mean, color="#F4A261", linewidth=2.0, linestyle="--", label=f"Mean: {bw_mean:.0f} kbps")
             ax_bw.axvline(bw_med, color="#2A9D8F", linewidth=1.8, linestyle=":", label=f"Median: {bw_med:.0f} kbps")
             ax_bw.axvline(bw_p95, color="#E63946", linewidth=1.5, linestyle="-.", label=f"P95: {bw_p95:.0f} kbps")
-            ax_bw.set_title(f"Bandwidth Distribution  —  Mean {bw_mean:.0f} kbps  |  P95 {bw_p95:.0f} kbps", pad=6)
+            ax_bw.set_title(f"Bandwidth Distribution  â€”  Mean {bw_mean:.0f} kbps  |  P95 {bw_p95:.0f} kbps", pad=6)
             ax_bw.set_xlabel("Bandwidth (kbps)")
             ax_bw.set_ylabel("Number of Samples")
             ax_bw.grid(True, axis="y", alpha=0.25)
@@ -860,7 +860,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
             ax_clock.fill_between(x, x, wall_elapsed, color="#BC6C25", alpha=0.18, label="Clock drift")
             drift_values = [abs(w - m) for w, m in zip(wall_elapsed, x)]
             max_drift = max(drift_values) if drift_values else 0.0
-            ax_clock.set_title(f"Media Clock vs Wall Clock  —  Max drift: {max_drift:.2f}s", pad=6)
+            ax_clock.set_title(f"Media Clock vs Wall Clock  â€”  Max drift: {max_drift:.2f}s", pad=6)
             ax_clock.set_xlabel("Timeline Sample (sec)")
             ax_clock.set_ylabel("Elapsed Time (sec)")
             ax_clock.grid(True, alpha=0.25)
@@ -897,7 +897,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         for autotext in autotexts:
             autotext.set_fontsize(9)
             autotext.set_fontweight("bold")
-        ax3.set_title(f"Frame Distribution  —  {total_f:.0f} total frames", pad=8)
+        ax3.set_title(f"Frame Distribution  â€”  {total_f:.0f} total frames", pad=8)
         pie_chart = charts_dir / "frame_distribution_pie.png"
         fig3.tight_layout()
         fig3.savefig(pie_chart, dpi=160)
@@ -919,7 +919,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
                         str(int(val)),
                         ha="center", va="bottom", fontsize=9, fontweight="bold",
                     )
-            ax4.set_title("Warning Categories  —  by type", pad=6)
+            ax4.set_title("Warning Categories  â€”  by type", pad=6)
             ax4.set_ylabel("Warning Count")
             ax4.grid(True, axis="y", alpha=0.25)
             fig4.text(
@@ -3150,7 +3150,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
             "PDF dependency missing. Install with: python -m pip install -r requirements.txt"
         )
 
-    # ── Extract all report fields ─────────────────────────────────────────────
+    # â”€â”€ Extract all report fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     summary = report_data.get("summary", {})
     stream = report_data.get("stream_info", {})
     engine_info = report_data.get("engine", {})
@@ -3203,7 +3203,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     wall_duration = float(report_data.get("wall_clock_duration_sec", 0.0) or 0.0)
     req_duration = float(report_data.get("requested_duration_sec", 0.0) or 0.0)
 
-    # ── Colour palette ────────────────────────────────────────────────────────
+    # â”€â”€ Colour palette â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if status == "completed":
         status_color = (27, 94, 32)
     elif status == "failed":
@@ -3227,7 +3227,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     LIGHT_GREY = (240, 244, 248)
     MID_GREY = (180, 190, 200)
 
-    # ── PDF object ────────────────────────────────────────────────────────────
+    # â”€â”€ PDF object â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     class _ReportPDF(FPDF):
         """FPDF subclass that renders a running footer on every page."""
         _report_title: str = APP_TITLE
@@ -3249,7 +3249,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     pdf._run_id = run_id
     pdf.set_auto_page_break(auto=True, margin=16)
 
-    # ── Shared helpers ────────────────────────────────────────────────────────
+    # â”€â”€ Shared helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def section_header(title: str, subtitle: str = "") -> None:
         """Draw a coloured section banner with optional subtitle."""
         pdf.set_fill_color(*ACCENT)
@@ -3314,7 +3314,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
         pdf.set_line_width(0.2)
         pdf.ln(2)
 
-    # ── Build narrative ───────────────────────────────────────────────────────
+    # â”€â”€ Build narrative â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     exec_summary, recommendations = _build_diagnosis_narrative(
         health_score=health_score,
         health_grade=health_grade,
@@ -3331,9 +3331,9 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
         status=status,
     )
 
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     #  COVER PAGE
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     pdf.add_page()
     # dark header band
     pdf.set_fill_color(*DARK_BLUE)
@@ -3354,7 +3354,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     pdf.set_text_color(0, 0, 0)
     pdf.set_y(76)
 
-    # ── Top-level KPI cards (row 1: 5 cards) ─────────────────────────────────
+    # â”€â”€ Top-level KPI cards (row 1: 5 cards) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     card_gap = 4.0
     n_cards = 5
     card_w = (pdf.w - 2 * pdf.l_margin - card_gap * (n_cards - 1)) / n_cards
@@ -3380,7 +3380,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
               str(warning_count), warn_color)
     pdf.set_y(y_cards + card_h + 5)
 
-    # ── Row 2: secondary KPI cards ────────────────────────────────────────────
+    # â”€â”€ Row 2: secondary KPI cards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     n2 = 4
     card_w2 = (pdf.w - 2 * pdf.l_margin - card_gap * (n2 - 1)) / n2
     y2 = pdf.get_y()
@@ -3402,7 +3402,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
               fps_str, (30, 100, 160))
     pdf.set_y(y2 + card_h2 + 6)
 
-    # ── Executive Summary ─────────────────────────────────────────────────────
+    # â”€â”€ Executive Summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     section_header("Executive Summary", "Plain-language diagnosis of this camera stream")
     pdf.set_font("Helvetica", "", 9.5)
     pdf.set_text_color(30, 40, 55)
@@ -3410,7 +3410,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     pdf.set_text_color(0, 0, 0)
     pdf.ln(2)
 
-    # ── Recommendations ───────────────────────────────────────────────────────
+    # â”€â”€ Recommendations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     section_header("Recommendations", "Action items to improve stream health")
     for idx, rec in enumerate(recommendations, start=1):
         pdf.set_font("Helvetica", "B", 9)
@@ -3423,9 +3423,9 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     pdf.set_text_color(0, 0, 0)
     pdf.ln(2)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    #  PAGE 2 – TECHNICAL METRICS
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    #  PAGE 2 â€“ TECHNICAL METRICS
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     pdf.add_page()
     section_header("Key Technical Metrics", "Detailed measured values from the diagnostic run")
 
@@ -3471,7 +3471,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
         (
             "Frames Received / Expected",
             f"{frames_received} / {summary.get('expected_frames', 'N/A')}",
-            "Expected = nominal FPS × run duration. Gap = estimated drops.",
+            "Expected = nominal FPS Ã— run duration. Gap = estimated drops.",
         ),
         (
             "Estimated Drop Rate",
@@ -3546,7 +3546,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
         kv_row(label, value, note=note)
         horizontal_rule()
 
-    # ── Transport probe ───────────────────────────────────────────────────────
+    # â”€â”€ Transport probe â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _transport_notes = {
         "tcp": "TCP is the most reliable transport - recommended for high-quality recording.",
         "udp": "UDP has lower latency but packets may be lost on congested networks.",
@@ -3567,7 +3567,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
             kv_row(mode.upper(), detail, label_w=28, note=note)
             horizontal_rule()
 
-    # ── GStreamer section ─────────────────────────────────────────────────────
+    # â”€â”€ GStreamer section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if engine_info.get("requested", "ffmpeg") == "gstreamer":
         pdf.ln(2)
         section_header("GStreamer Diagnostics",
@@ -3606,7 +3606,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
             kv_row(label, value, label_w=44, note=note)
             horizontal_rule()
 
-    # ── Run error ─────────────────────────────────────────────────────────────
+    # â”€â”€ Run error â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     run_error = report_data.get("error")
     if run_error:
         pdf.ln(1)
@@ -3796,9 +3796,9 @@ class LiveChartCard(ttk.LabelFrame):
         self.canvas = tk.Canvas(
             self,
             height=110,
-            bg="#0D1B2A",
+            bg="#FFFFFF",
             highlightthickness=1,
-            highlightbackground="#30475E",
+            highlightbackground="#CBD5E1",
         )
         self.canvas.pack(fill=tk.X, expand=True, pady=(6, 0))
         self.canvas.bind("<Configure>", lambda _event: self.redraw())
@@ -3820,14 +3820,14 @@ class LiveChartCard(ttk.LabelFrame):
 
         for step in range(1, 4):
             y = int((height - 16) * step / 4)
-            self.canvas.create_line(8, y, width - 8, y, fill="#1B263B")
+            self.canvas.create_line(8, y, width - 8, y, fill="#E2E8F0")
 
         if len(self.samples) < 2:
             self.canvas.create_text(
                 width / 2,
                 height / 2,
                 text="Live data appears here during diagnostics",
-                fill="#A9BCD0",
+                fill="#64748B",
                 font=("Segoe UI", 9),
             )
             return
@@ -3857,7 +3857,7 @@ class LiveChartCard(ttk.LabelFrame):
             width - 10,
             10,
             text=f"{max_value:.1f}",
-            fill="#E0E1DD",
+            fill="#334155",
             anchor="ne",
             font=("Segoe UI", 8),
         )
@@ -3865,7 +3865,7 @@ class LiveChartCard(ttk.LabelFrame):
             width - 10,
             height - 8,
             text=f"{min_value:.1f}",
-            fill="#E0E1DD",
+            fill="#334155",
             anchor="se",
             font=("Segoe UI", 8),
         )
@@ -3889,9 +3889,9 @@ class CombinedLiveChartCard(ttk.LabelFrame):
         self.canvas = tk.Canvas(
             body,
             height=170,
-            bg="#0D1B2A",
+            bg="#FFFFFF",
             highlightthickness=1,
-            highlightbackground="#30475E",
+            highlightbackground="#CBD5E1",
         )
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.canvas.bind("<Configure>", lambda _event: self.redraw())
@@ -3947,14 +3947,14 @@ class CombinedLiveChartCard(ttk.LabelFrame):
 
         for step in range(5):
             y = plot_top + (plot_height * step / 4)
-            self.canvas.create_line(plot_left, y, plot_right, y, fill="#1B263B")
+            self.canvas.create_line(plot_left, y, plot_right, y, fill="#E2E8F0")
 
         if len(self.bandwidth_samples) < 2 or len(self.received_samples) < 2 or len(self.dropped_samples) < 2:
             self.canvas.create_text(
                 width / 2,
                 height / 2,
                 text="Live data appears here during diagnostics",
-                fill="#A9BCD0",
+                fill="#64748B",
                 font=("Segoe UI", 9),
             )
             return
@@ -3974,9 +3974,9 @@ class CombinedLiveChartCard(ttk.LabelFrame):
         bar_half = max(group_width * 0.22, 2.0)
         line_points: list[float] = []
 
-        self.canvas.create_line(plot_left, plot_top, plot_left, plot_bottom, fill="#415A77")
-        self.canvas.create_line(plot_right, plot_top, plot_right, plot_bottom, fill="#415A77")
-        self.canvas.create_line(plot_left, plot_bottom, plot_right, plot_bottom, fill="#415A77")
+        self.canvas.create_line(plot_left, plot_top, plot_left, plot_bottom, fill="#94A3B8")
+        self.canvas.create_line(plot_right, plot_top, plot_right, plot_bottom, fill="#94A3B8")
+        self.canvas.create_line(plot_left, plot_bottom, plot_right, plot_bottom, fill="#94A3B8")
 
         for idx in range(count):
             center_x = plot_left + ((idx + 0.5) * plot_width / max(count, 1))
@@ -4010,7 +4010,7 @@ class CombinedLiveChartCard(ttk.LabelFrame):
             6,
             plot_top,
             text=f"{max_frames:.0f}",
-            fill="#E0E1DD",
+            fill="#334155",
             anchor="nw",
             font=("Segoe UI", 8),
         )
@@ -4018,7 +4018,7 @@ class CombinedLiveChartCard(ttk.LabelFrame):
             6,
             plot_bottom,
             text="0",
-            fill="#E0E1DD",
+            fill="#334155",
             anchor="sw",
             font=("Segoe UI", 8),
         )
@@ -4026,7 +4026,7 @@ class CombinedLiveChartCard(ttk.LabelFrame):
             width - 6,
             plot_top,
             text=f"{max_bandwidth:.0f} kbps",
-            fill="#E0E1DD",
+            fill="#334155",
             anchor="ne",
             font=("Segoe UI", 8),
         )
@@ -4034,7 +4034,7 @@ class CombinedLiveChartCard(ttk.LabelFrame):
             width - 6,
             plot_bottom,
             text="0 kbps",
-            fill="#E0E1DD",
+            fill="#334155",
             anchor="se",
             font=("Segoe UI", 8),
         )
@@ -4100,8 +4100,8 @@ class DiagnosticApp:
         self.dropped_chart_points: list[float] = []
 
         self._set_window_icon()
-        self._build_ui()
         self._apply_theme()
+        self._build_ui()
         self._refresh_engine_ui()
         self.root.after(200, self._drain_events)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -4181,8 +4181,50 @@ class DiagnosticApp:
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure("TButton", padding=(10, 6))
-        style.configure("TLabelframe.Label", font=("Segoe UI Semibold", 10))
+        self.root.configure(bg="#F4F7FB")
+        style.configure(".", background="#F4F7FB", foreground="#0F172A", font=("Segoe UI", 10))
+        style.configure("TLabelframe", background="#FFFFFF", bordercolor="#DDE4EE", relief="solid")
+        style.configure("TLabelframe.Label", background="#FFFFFF", foreground="#0F172A", font=("Segoe UI Semibold", 10))
+        style.configure("TFrame", background="#F4F7FB")
+        style.configure("Card.TFrame", background="#FFFFFF")
+        style.configure("Section.TLabelframe", background="#FFFFFF", bordercolor="#DDE4EE", relief="solid")
+        style.configure(
+            "Section.TLabelframe.Label",
+            background="#FFFFFF",
+            foreground="#0F172A",
+            font=("Segoe UI Semibold", 10),
+        )
+        style.configure("Header.TLabel", background="#F4F7FB", foreground="#0F172A", font=("Segoe UI Semibold", 18))
+        style.configure("SubHeader.TLabel", background="#F4F7FB", foreground="#475569", font=("Segoe UI", 10))
+        style.configure("MetricName.TLabel", background="#FFFFFF", foreground="#475569", font=("Segoe UI Semibold", 9))
+        style.configure("MetricValue.TLabel", background="#FFFFFF", foreground="#0F172A", font=("Segoe UI", 10))
+        style.configure("TLabel", background="#F4F7FB", foreground="#0F172A")
+        style.configure("TEntry", fieldbackground="#FFFFFF", foreground="#0F172A")
+        style.configure("TCombobox", fieldbackground="#FFFFFF", foreground="#0F172A")
+        style.map("TCombobox", fieldbackground=[("readonly", "#FFFFFF")], foreground=[("readonly", "#0F172A")])
+        style.configure("TButton", padding=(11, 7), font=("Segoe UI Semibold", 9))
+        style.configure("Primary.TButton", padding=(12, 8), background="#0EA5E9", foreground="#FFFFFF")
+        style.map(
+            "Primary.TButton",
+            background=[("active", "#0284C7"), ("pressed", "#0369A1")],
+            foreground=[("disabled", "#E2E8F0"), ("!disabled", "#FFFFFF")],
+        )
+        style.configure("Danger.TButton", padding=(12, 8), background="#EF4444", foreground="#FFFFFF")
+        style.map(
+            "Danger.TButton",
+            background=[("active", "#DC2626"), ("pressed", "#B91C1C")],
+            foreground=[("disabled", "#FECACA"), ("!disabled", "#FFFFFF")],
+        )
+        style.configure("Secondary.TButton", padding=(11, 7), background="#E2E8F0", foreground="#0F172A")
+        style.map("Secondary.TButton", background=[("active", "#CBD5E1"), ("pressed", "#94A3B8")])
+        style.configure(
+            "Accent.Horizontal.TProgressbar",
+            troughcolor="#E2E8F0",
+            bordercolor="#E2E8F0",
+            background="#0EA5E9",
+            lightcolor="#0EA5E9",
+            darkcolor="#0EA5E9",
+        )
 
     def _set_window_icon(self) -> None:
         ico_path = get_resource_path("assets/camera_icon.ico")
@@ -4203,33 +4245,36 @@ class DiagnosticApp:
         shell = ttk.Frame(self.root)
         shell.pack(fill=tk.BOTH, expand=True)
 
-        self.main_canvas = tk.Canvas(shell, highlightthickness=0)
+        self.main_canvas = tk.Canvas(shell, bg="#F4F7FB", highlightthickness=0)
         self.main_scrollbar = ttk.Scrollbar(shell, orient=tk.VERTICAL, command=self.main_canvas.yview)
         self.main_canvas.configure(yscrollcommand=self.main_scrollbar.set)
         self.main_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.main_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        wrapper = ttk.Frame(self.main_canvas, padding=10)
+        wrapper = ttk.Frame(self.main_canvas, padding=14)
         self.wrapper_window = self.main_canvas.create_window((0, 0), window=wrapper, anchor="nw")
         wrapper.bind("<Configure>", self._on_wrapper_configure)
         self.main_canvas.bind("<Configure>", self._on_canvas_configure)
         self.main_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
 
-        header = ttk.Label(
-            wrapper,
-            text="RTSP Camera Frame Drop Diagnostic",
-            font=("Segoe UI Semibold", 14),
-        )
-        header.pack(anchor="w", pady=(0, 2))
+        header = ttk.Frame(wrapper)
+        header.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(header, text="RTSP Camera Frame Drop Diagnostic", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text=(
+                "Run FFmpeg diagnostics with live metrics and export polished PDF/JSON reports. "
+                "GStreamer remains optional."
+            ),
+            style="SubHeader.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
+        ttk.Label(
+            header,
+            text=f"v{APP_VERSION} | Build {BUILD_DATE}",
+            style="SubHeader.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
 
-        version_label = ttk.Label(
-            wrapper,
-            text=f"v{APP_VERSION}  —  Build {BUILD_DATE}",
-            font=("Segoe UI", 9),
-        )
-        version_label.pack(anchor="w", pady=(0, 8))
-
-        input_frame = ttk.LabelFrame(wrapper, text="Test Input", padding=10)
+        input_frame = ttk.LabelFrame(wrapper, text="Test Input", padding=12, style="Section.TLabelframe")
         input_frame.pack(fill=tk.X)
 
         ttk.Label(input_frame, text="RTSP URL").grid(row=0, column=0, sticky="w")
@@ -4294,14 +4339,45 @@ class DiagnosticApp:
         for col in (1, 2, 3, 4, 5):
             input_frame.columnconfigure(col, weight=1)
 
-        button_frame = ttk.Frame(wrapper, padding=(0, 10, 0, 10))
+        button_frame = ttk.Frame(wrapper, padding=(0, 12, 0, 12))
         button_frame.pack(fill=tk.X)
-        self.check_btn = ttk.Button(button_frame, text="Check Connection", command=self.check_connection)
-        self.preview_btn = ttk.Button(button_frame, text="Start Live Preview", command=self.toggle_preview)
-        self.start_btn = ttk.Button(button_frame, text="Start Diagnostic", command=self.start_test)
-        self.stop_btn = ttk.Button(button_frame, text="Stop", command=self.stop_test, state=tk.DISABLED)
-        self.open_reports_btn = ttk.Button(button_frame, text="Open Reports Folder", command=self.open_reports_folder)
-        self.open_last_btn = ttk.Button(button_frame, text="Open Last Report", command=self.open_last_report)
+        self.check_btn = ttk.Button(
+            button_frame,
+            text="Check Connection",
+            command=self.check_connection,
+            style="Secondary.TButton",
+        )
+        self.preview_btn = ttk.Button(
+            button_frame,
+            text="Start Live Preview",
+            command=self.toggle_preview,
+            style="Secondary.TButton",
+        )
+        self.start_btn = ttk.Button(
+            button_frame,
+            text="Start Diagnostic",
+            command=self.start_test,
+            style="Primary.TButton",
+        )
+        self.stop_btn = ttk.Button(
+            button_frame,
+            text="Stop",
+            command=self.stop_test,
+            state=tk.DISABLED,
+            style="Danger.TButton",
+        )
+        self.open_reports_btn = ttk.Button(
+            button_frame,
+            text="Open Reports Folder",
+            command=self.open_reports_folder,
+            style="Secondary.TButton",
+        )
+        self.open_last_btn = ttk.Button(
+            button_frame,
+            text="Open Last Report",
+            command=self.open_last_report,
+            style="Secondary.TButton",
+        )
         self.check_btn.pack(side=tk.LEFT)
         self.preview_btn.pack(side=tk.LEFT, padx=8)
         self.start_btn.pack(side=tk.LEFT, padx=8)
@@ -4309,7 +4385,7 @@ class DiagnosticApp:
         self.open_reports_btn.pack(side=tk.LEFT, padx=8)
         self.open_last_btn.pack(side=tk.LEFT)
 
-        summary_frame = ttk.LabelFrame(wrapper, text="Live Report", padding=10)
+        summary_frame = ttk.LabelFrame(wrapper, text="Live Report", padding=12, style="Section.TLabelframe")
         summary_frame.pack(fill=tk.X)
 
         self._pair(summary_frame, "Status", self.status_var, 0, 0)
@@ -4335,22 +4411,42 @@ class DiagnosticApp:
         summary_frame.columnconfigure(3, weight=1)
 
         ttk.Label(wrapper, text="Progress").pack(anchor="w")
-        self.progress = ttk.Progressbar(wrapper, orient="horizontal", mode="determinate", maximum=100)
+        self.progress = ttk.Progressbar(
+            wrapper,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100,
+            style="Accent.Horizontal.TProgressbar",
+        )
         self.progress.pack(fill=tk.X, pady=(0, 10))
 
-        charts_frame = ttk.LabelFrame(wrapper, text="Live Charts", padding=10)
+        charts_frame = ttk.LabelFrame(wrapper, text="Live Charts", padding=12, style="Section.TLabelframe")
         charts_frame.pack(fill=tk.X, pady=(0, 10))
         self.activity_chart = CombinedLiveChartCard(charts_frame, "Frames + Bandwidth")
         self.activity_chart.pack(fill=tk.X)
 
-        logs_frame = ttk.LabelFrame(wrapper, text="FFmpeg Live Logs", padding=10)
+        logs_frame = ttk.LabelFrame(wrapper, text="FFmpeg Live Logs", padding=12, style="Section.TLabelframe")
         logs_frame.pack(fill=tk.BOTH, expand=True)
-        self.logs = ScrolledText(logs_frame, height=14, wrap=tk.WORD, font=("Consolas", 10))
+        self.logs = ScrolledText(
+            logs_frame,
+            height=14,
+            wrap=tk.WORD,
+            font=("Cascadia Code", 10),
+            bg="#0F172A",
+            fg="#E2E8F0",
+            insertbackground="#FFFFFF",
+            borderwidth=0,
+            relief="flat",
+        )
         self.logs.pack(fill=tk.BOTH, expand=True)
 
     def _pair(self, parent: ttk.Frame, label: str, variable: tk.StringVar, row: int, col: int) -> None:
-        ttk.Label(parent, text=f"{label}:").grid(row=row, column=col, sticky="w", padx=(0, 8), pady=2)
-        ttk.Label(parent, textvariable=variable).grid(row=row, column=col + 1, sticky="w", pady=2)
+        ttk.Label(parent, text=label, style="MetricName.TLabel").grid(
+            row=row, column=col, sticky="w", padx=(0, 8), pady=3
+        )
+        ttk.Label(parent, textvariable=variable, style="MetricValue.TLabel").grid(
+            row=row, column=col + 1, sticky="w", pady=3
+        )
 
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
