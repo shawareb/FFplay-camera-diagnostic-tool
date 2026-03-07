@@ -77,6 +77,8 @@ APP_TITLE = "RTSP Camera Frame Drop Diagnostic"
 APP_VERSION = "1.1.0"
 # BUILD_DATE is the release date for this version; bump together with APP_VERSION on each release.
 BUILD_DATE = "2026-03-06"
+EXPECTED_FRAME_GRACE_START_SEC = 2.0
+EXPECTED_FRAME_GRACE_END_SEC = 2.0
 MAX_WARNING_SAMPLES = 30
 LIVE_CHART_MAX_POINTS = 180
 DIAGNOSTIC_ENGINES = ("ffmpeg", "gstreamer")
@@ -2448,12 +2450,14 @@ class DiagnosticWorker(threading.Thread):
         if current_bandwidth_kbps > 0:
             self.bitrate_kbps_samples.append(current_bandwidth_kbps)
 
-        expected_frames = frame + max(0.0, self.gstreamer_drop_equivalent_frames)
-        if not self.drop_baseline_set:
-            if frame > 0 and expected_frames > 0:
-                self.drop_baseline_bias = max(0.0, expected_frames - float(frame))
-                self.drop_baseline_set = True
-        expected_frames = max(float(frame), expected_frames - self.drop_baseline_bias)
+        expected_elapsed = analysis_elapsed + EXPECTED_FRAME_GRACE_START_SEC
+        if self.context.duration_seconds > 0:
+            duration_target = float(self.context.duration_seconds)
+            if duration_target - analysis_elapsed <= EXPECTED_FRAME_GRACE_END_SEC:
+                expected_elapsed = duration_target
+            else:
+                expected_elapsed = min(duration_target, expected_elapsed)
+        expected_frames = fps_nominal * expected_elapsed if fps_nominal > 0 else 0.0
         estimated_drop = max(0, int(round(expected_frames - frame))) if expected_frames > 0 else 0
         drop_rate_percent = (estimated_drop / expected_frames * 100.0) if expected_frames > 0 else 0.0
         jitter_std = safe_stdev(self.frame_rate_samples)
@@ -2490,6 +2494,8 @@ class DiagnosticWorker(threading.Thread):
             "drop_rate_percent": round(drop_rate_percent, 3),
             "bandwidth_kbps_current": round(current_bandwidth_kbps, 3),
             "fps_realtime_num": round(instant_fps, 3),
+            "capture_fps_for_chart": round(instant_fps, 3),
+            "drop_fps_for_chart": round((estimated_drop / max(expected_elapsed, 0.001)), 3),
             "health_score": int(health_score),
             "warning_count": int(self.warning_count),
         }
@@ -2526,6 +2532,8 @@ class DiagnosticWorker(threading.Thread):
             "speed": f"{overall_speed:.3f}x",
             "fps_realtime": f"{instant_fps:.3f}",
             "fps_realtime_num": round(instant_fps, 3),
+            "capture_fps_for_chart": round(instant_fps, 3),
+            "drop_fps_for_chart": round((estimated_drop / max(expected_elapsed, 0.001)), 3),
             "bitrate": f"{current_bandwidth_kbps:.1f} kbps" if current_bandwidth_kbps > 0 else "N/A",
             "bandwidth_kbps_current": round(current_bandwidth_kbps, 3),
             "bandwidth_kbps_avg": round(safe_mean(self.bitrate_kbps_samples), 3),
@@ -2614,6 +2622,7 @@ class DiagnosticWorker(threading.Thread):
 
         bitrate_kbps = parse_bitrate_to_kbps(payload.get("bitrate", ""))
         current_bandwidth_kbps = 0.0
+        instant_fps_calc = 0.0
 
         realtime_fps = parse_float_token(payload.get("fps", ""))
         if realtime_fps is not None and realtime_fps >= 0:
@@ -2628,6 +2637,7 @@ class DiagnosticWorker(threading.Thread):
             frame_delta = frame - self.last_frame_count
             if elapsed_delta > 0:
                 instant_fps = frame_delta / elapsed_delta
+                instant_fps_calc = instant_fps
                 if elapsed_delta >= 0.25 and instant_fps >= 0:
                     self.frame_rate_samples.append(instant_fps)
 
@@ -2667,15 +2677,14 @@ class DiagnosticWorker(threading.Thread):
             fps_nominal = safe_mean(self.frame_rate_samples[-15:])
             self.fallback_nominal_fps = fps_nominal
 
-        raw_expected_frames = fps_nominal * analysis_elapsed if fps_nominal > 0 else 0.0
-        if not self.drop_baseline_set:
-            if frame > 0 and raw_expected_frames > 0:
-                self.drop_baseline_bias = max(0.0, raw_expected_frames - float(frame))
-                self.drop_baseline_set = True
+        expected_elapsed = analysis_elapsed + EXPECTED_FRAME_GRACE_START_SEC
+        if self.context.duration_seconds > 0:
+            duration_target = float(self.context.duration_seconds)
+            if duration_target - analysis_elapsed <= EXPECTED_FRAME_GRACE_END_SEC:
+                expected_elapsed = duration_target
             else:
-                raw_expected_frames = 0.0
-
-        expected_frames = max(0.0, raw_expected_frames - self.drop_baseline_bias)
+                expected_elapsed = min(duration_target, expected_elapsed)
+        expected_frames = fps_nominal * expected_elapsed if fps_nominal > 0 else 0.0
         estimated_drop = max(0, int(round(expected_frames - frame))) if expected_frames > 0 else 0
         drop_rate_percent = (estimated_drop / expected_frames * 100.0) if expected_frames > 0 else 0.0
         jitter_std = safe_stdev(self.frame_rate_samples)
@@ -2707,6 +2716,11 @@ class DiagnosticWorker(threading.Thread):
             "bandwidth_kbps_current": round(bitrate_kbps, 3) if bitrate_kbps is not None else 0.0,
             "total_size_bytes": int(total_size_bytes),
             "fps_realtime_num": round(realtime_fps, 3) if realtime_fps is not None else 0.0,
+            "capture_fps_for_chart": round(
+                realtime_fps if realtime_fps is not None else instant_fps_calc,
+                3,
+            ),
+            "drop_fps_for_chart": round((estimated_drop / max(expected_elapsed, 0.001)), 3),
             "health_score": int(health_score),
             "warning_count": int(self.warning_count),
         }
@@ -2736,6 +2750,11 @@ class DiagnosticWorker(threading.Thread):
             "speed": payload.get("speed", "N/A"),
             "fps_realtime": payload.get("fps", "N/A"),
             "fps_realtime_num": round(realtime_fps, 3) if realtime_fps is not None else 0.0,
+            "capture_fps_for_chart": round(
+                realtime_fps if realtime_fps is not None else instant_fps_calc,
+                3,
+            ),
+            "drop_fps_for_chart": round((estimated_drop / max(expected_elapsed, 0.001)), 3),
             "bitrate": payload.get("bitrate", "N/A"),
             "bandwidth_kbps_current": round(bitrate_kbps, 3) if bitrate_kbps is not None else 0.0,
             "bandwidth_kbps_avg": round(safe_mean(self.bitrate_kbps_samples), 3),
@@ -2747,7 +2766,7 @@ class DiagnosticWorker(threading.Thread):
             "rtp_missed_packets": int(self.rtp_missed_packets),
             "health_score": health_score,
             "health_grade": health_grade,
-            "drop_baseline_bias_frames": round(self.drop_baseline_bias, 3),
+            "drop_baseline_bias_frames": 0.0,
         }
 
     def _freeze_total_seconds(self, current_elapsed: float = 0.0) -> float:
@@ -2877,7 +2896,8 @@ class DiagnosticWorker(threading.Thread):
                 if self.gstreamer_wall_drift_samples
                 else 0.0,
                 "edge_normalization": {
-                    "startup_bias_frames_removed": round(self.drop_baseline_bias, 3),
+                    "expected_frame_grace_start_sec": EXPECTED_FRAME_GRACE_START_SEC,
+                    "expected_frame_grace_end_sec": EXPECTED_FRAME_GRACE_END_SEC,
                     "analysis_duration_capped_to_requested_duration": True,
                     "tail_end_snapshot_ignored_when_no_new_frames": engine_mode != "gstreamer",
                 },
@@ -4072,10 +4092,8 @@ class CombinedLiveChartCard(ttk.LabelFrame):
         received_plot = [self.received_samples[index] for index in sample_indices]
         dropped_plot = [self.dropped_samples[index] for index in sample_indices]
         bandwidth_plot = [self.bandwidth_samples[index] for index in sample_indices]
-        received_interval_plot = cumulative_to_interval(received_plot)
-        dropped_interval_plot = cumulative_to_interval(dropped_plot)
 
-        max_frames = max(received_interval_plot + dropped_interval_plot + [1.0])
+        max_frames = max(received_plot + dropped_plot + [1.0])
         max_bandwidth = max(bandwidth_plot + [1.0])
         count = len(sample_indices)
         x_step = plot_width / max(count, 1)
@@ -4090,8 +4108,8 @@ class CombinedLiveChartCard(ttk.LabelFrame):
         for idx in range(count):
             center_x = plot_left + ((idx + 0.5) * plot_width / max(count, 1))
 
-            received_height = (received_interval_plot[idx] / max_frames) * plot_height if max_frames > 0 else 0.0
-            dropped_height = (dropped_interval_plot[idx] / max_frames) * plot_height if max_frames > 0 else 0.0
+            received_height = (received_plot[idx] / max_frames) * plot_height if max_frames > 0 else 0.0
+            dropped_height = (dropped_plot[idx] / max_frames) * plot_height if max_frames > 0 else 0.0
             bandwidth_y = plot_bottom - ((bandwidth_plot[idx] / max_bandwidth) * plot_height if max_bandwidth > 0 else 0.0)
 
             self.canvas.create_rectangle(
@@ -4557,6 +4575,15 @@ class DiagnosticApp:
             row=row, column=col + 1, sticky="w", pady=3
         )
 
+    def _nominal_fps_for_ui(self) -> float:
+        match = re.search(r"\|\s*([0-9]+(?:\.[0-9]+)?)\s*FPS", self.stream_var.get() or "", re.IGNORECASE)
+        if not match:
+            return 0.0
+        try:
+            return float(match.group(1))
+        except Exception:
+            return 0.0
+
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.logs.insert(tk.END, f"[{timestamp}] {message}\n")
@@ -4569,8 +4596,14 @@ class DiagnosticApp:
 
     def _refresh_live_charts(self) -> None:
         self._trim_chart_points()
-        latest_received = int(self.received_chart_points[-1]) if self.received_chart_points else 0
-        latest_dropped = int(self.dropped_chart_points[-1]) if self.dropped_chart_points else 0
+        try:
+            latest_received = int(float(self.received_var.get() or "0"))
+        except Exception:
+            latest_received = 0
+        try:
+            latest_dropped = int(float(self.estimated_drops_var.get() or "0"))
+        except Exception:
+            latest_dropped = 0
         latest_bandwidth = self.bandwidth_chart_points[-1] if self.bandwidth_chart_points else 0.0
         self.activity_chart.update_series(
             self.received_chart_points,
@@ -5069,6 +5102,8 @@ class DiagnosticApp:
             ffmpeg_dup = int(data.get("dup_frames", 0) or 0)
             bandwidth_now = float(data.get("bandwidth_kbps_current", 0.0) or 0.0)
             bandwidth_avg = float(data.get("bandwidth_kbps_avg", 0.0) or 0.0)
+            capture_fps_chart = float(data.get("capture_fps_for_chart", 0.0) or 0.0)
+            drop_fps_chart = float(data.get("drop_fps_for_chart", 0.0) or 0.0)
             jitter_percent = float(data.get("instant_fps_jitter_percent", 0.0) or 0.0)
             startup_latency = float(data.get("startup_latency_sec", 0.0) or 0.0)
             missed_packets = int(data.get("rtp_missed_packets", 0) or 0)
@@ -5087,15 +5122,29 @@ class DiagnosticApp:
             self.startup_latency_var.set(f"{startup_latency:.2f} s")
             self.packet_missed_var.set(str(missed_packets))
             self.health_var.set(f"{health_score} ({health_grade})")
-            self.bandwidth_chart_points.append(bandwidth_now)
-            self.received_chart_points.append(float(frame))
-            self.dropped_chart_points.append(float(estimated))
-            self._refresh_live_charts()
 
             try:
                 duration = int(self.duration_var.get())
             except ValueError:
                 duration = 0
+            nominal_fps = self._nominal_fps_for_ui()
+            if nominal_fps > 0:
+                fps_cap = nominal_fps * 1.25
+                capture_fps_chart = min(max(0.0, capture_fps_chart), fps_cap)
+                drop_fps_chart = min(max(0.0, drop_fps_chart), fps_cap)
+            # Ignore first/last 2 seconds in live chart bars to avoid startup/shutdown artifacts.
+            if duration > 0 and (elapsed <= EXPECTED_FRAME_GRACE_START_SEC or (duration - elapsed) <= EXPECTED_FRAME_GRACE_END_SEC):
+                if self.received_chart_points:
+                    capture_fps_chart = self.received_chart_points[-1]
+                else:
+                    capture_fps_chart = max(0.0, capture_fps_chart)
+                drop_fps_chart = 0.0
+
+            self.bandwidth_chart_points.append(bandwidth_now)
+            self.received_chart_points.append(max(0.0, capture_fps_chart))
+            self.dropped_chart_points.append(max(0.0, drop_fps_chart))
+            self._refresh_live_charts()
+
             if duration > 0:
                 percentage = min(100.0, (elapsed / duration) * 100.0)
                 self.progress["value"] = percentage
