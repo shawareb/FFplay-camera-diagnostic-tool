@@ -7,7 +7,7 @@ a network using FFmpeg or GStreamer as the back-end engine.
 Features
 --------
 - Real-time metrics: frames received, estimated drops, bandwidth, FPS jitter,
-  startup latency, missed RTP packets, stream health score (0â€“100).
+  startup latency, missed RTP packets, stream health score (0-100).
 - RTSP transport probing: tests TCP, UDP-unicast, and UDP-multicast so you
   know which paths work before committing to a full run.
 - PDF + JSON reports with KPI cards, timeline charts, bandwidth distribution,
@@ -1923,6 +1923,7 @@ class RunContext:
     gst_launch_path: Optional[str]
     gst_play_path: Optional[str]
     gst_discoverer_path: Optional[str]
+    target_fps: float
     output_dir: str
     run_id: str
 
@@ -1970,6 +1971,7 @@ class DiagnosticWorker(threading.Thread):
         self.gstreamer_wall_drift_samples: list[float] = []
         self.last_chart_drop_count: Optional[int] = None
         self.last_chart_drop_elapsed: Optional[float] = None
+        self.drop_grace_bias: Optional[float] = None
         self.selected_transport = resolve_transport_for_ff_tools(self.context.transport_mode)
 
     def emit(self, kind: str, **payload) -> None:
@@ -1982,6 +1984,24 @@ class DiagnosticWorker(threading.Thread):
                 self.process.terminate()
             except Exception:
                 pass
+
+    def _resolve_effective_nominal_fps(self) -> float:
+        if self.context.target_fps > 0:
+            return float(self.context.target_fps)
+        fps_nominal = float(self.stream_info.get("fps", 0.0) or 0.0)
+        if fps_nominal <= 0:
+            fps_nominal = self.fallback_nominal_fps or 0.0
+        return float(max(0.0, fps_nominal))
+
+    @staticmethod
+    def _normalize_chart_fps(fps_value: Optional[float], fps_nominal: float) -> float:
+        value = float(fps_value or 0.0)
+        if value < 0:
+            return 0.0
+        if fps_nominal > 0:
+            # Clamp chart spikes caused by uneven ffmpeg/gstreamer progress bursts.
+            return min(value, fps_nominal * 1.15)
+        return value
 
     def run(self) -> None:
         self.started_at = datetime.now()
@@ -2478,9 +2498,9 @@ class DiagnosticWorker(threading.Thread):
             if self.context.duration_seconds > 0:
                 wall_elapsed = min(wall_elapsed, float(self.context.duration_seconds))
 
-        fps_nominal = float(self.stream_info.get("fps", 0.0) or 0.0)
+        fps_nominal = self._resolve_effective_nominal_fps()
         if fps_nominal <= 0:
-            fps_nominal = self.fallback_nominal_fps or 25.0
+            fps_nominal = 25.0
             self.fallback_nominal_fps = fps_nominal
 
         frame = int(round(max(0.0, analysis_elapsed) * fps_nominal)) if fps_nominal > 0 else int(self.last_frame_count or 0)
@@ -2521,15 +2541,22 @@ class DiagnosticWorker(threading.Thread):
         if current_bandwidth_kbps > 0:
             self.bitrate_kbps_samples.append(current_bandwidth_kbps)
 
-        expected_elapsed = analysis_elapsed + EXPECTED_FRAME_GRACE_START_SEC
+        expected_elapsed = analysis_elapsed
         if self.context.duration_seconds > 0:
             duration_target = float(self.context.duration_seconds)
             if duration_target - analysis_elapsed <= EXPECTED_FRAME_GRACE_END_SEC:
                 expected_elapsed = duration_target
             else:
-                expected_elapsed = min(duration_target, expected_elapsed)
+                expected_elapsed = min(duration_target, analysis_elapsed)
         expected_frames = fps_nominal * expected_elapsed if fps_nominal > 0 else 0.0
-        estimated_drop = max(0, int(round(expected_frames - frame))) if expected_frames > 0 else 0
+        raw_drop_frames = max(0.0, expected_frames - float(frame)) if expected_frames > 0 else 0.0
+        if analysis_elapsed <= EXPECTED_FRAME_GRACE_START_SEC:
+            self.drop_grace_bias = max(float(self.drop_grace_bias or 0.0), raw_drop_frames)
+        elif self.drop_grace_bias is None:
+            self.drop_grace_bias = raw_drop_frames
+        grace_bias = self.drop_grace_bias or 0.0
+        adjusted_drop_frames = max(0.0, raw_drop_frames - grace_bias)
+        estimated_drop = int(round(adjusted_drop_frames)) if expected_frames > 0 else 0
         if self.last_chart_drop_count is None or self.last_chart_drop_elapsed is None:
             drop_fps_chart = 0.0
         else:
@@ -2562,6 +2589,7 @@ class DiagnosticWorker(threading.Thread):
             overall_speed = analysis_elapsed / wall_elapsed
             self.speed_samples.append(overall_speed)
 
+        chart_fps = self._normalize_chart_fps(instant_fps, fps_nominal)
         timeline_point = {
             "elapsed_sec": round(analysis_elapsed, 3),
             "analysis_elapsed_sec": round(analysis_elapsed, 3),
@@ -2573,7 +2601,7 @@ class DiagnosticWorker(threading.Thread):
             "drop_rate_percent": round(drop_rate_percent, 3),
             "bandwidth_kbps_current": round(current_bandwidth_kbps, 3),
             "fps_realtime_num": round(instant_fps, 3),
-            "capture_fps_for_chart": round(instant_fps, 3),
+            "capture_fps_for_chart": round(chart_fps, 3),
             "drop_fps_for_chart": round(drop_fps_chart, 3),
             "health_score": int(health_score),
             "warning_count": int(self.warning_count),
@@ -2611,7 +2639,7 @@ class DiagnosticWorker(threading.Thread):
             "speed": f"{overall_speed:.3f}x",
             "fps_realtime": f"{instant_fps:.3f}",
             "fps_realtime_num": round(instant_fps, 3),
-            "capture_fps_for_chart": round(instant_fps, 3),
+            "capture_fps_for_chart": round(chart_fps, 3),
             "drop_fps_for_chart": round(drop_fps_chart, 3),
             "bitrate": f"{current_bandwidth_kbps:.1f} kbps" if current_bandwidth_kbps > 0 else "N/A",
             "bandwidth_kbps_current": round(current_bandwidth_kbps, 3),
@@ -2751,20 +2779,27 @@ class DiagnosticWorker(threading.Thread):
         self.last_frame_count = frame
         self.last_total_size_bytes = total_size_bytes
 
-        fps_nominal = float(self.stream_info.get("fps", 0.0) or 0.0)
+        fps_nominal = self._resolve_effective_nominal_fps()
         if fps_nominal <= 0 and self.frame_rate_samples:
             fps_nominal = safe_mean(self.frame_rate_samples[-15:])
             self.fallback_nominal_fps = fps_nominal
 
-        expected_elapsed = analysis_elapsed + EXPECTED_FRAME_GRACE_START_SEC
+        expected_elapsed = analysis_elapsed
         if self.context.duration_seconds > 0:
             duration_target = float(self.context.duration_seconds)
             if duration_target - analysis_elapsed <= EXPECTED_FRAME_GRACE_END_SEC:
                 expected_elapsed = duration_target
             else:
-                expected_elapsed = min(duration_target, expected_elapsed)
+                expected_elapsed = min(duration_target, analysis_elapsed)
         expected_frames = fps_nominal * expected_elapsed if fps_nominal > 0 else 0.0
-        estimated_drop = max(0, int(round(expected_frames - frame))) if expected_frames > 0 else 0
+        raw_drop_frames = max(0.0, expected_frames - float(frame)) if expected_frames > 0 else 0.0
+        if analysis_elapsed <= EXPECTED_FRAME_GRACE_START_SEC:
+            self.drop_grace_bias = max(float(self.drop_grace_bias or 0.0), raw_drop_frames)
+        elif self.drop_grace_bias is None:
+            self.drop_grace_bias = raw_drop_frames
+        grace_bias = self.drop_grace_bias or 0.0
+        adjusted_drop_frames = max(0.0, raw_drop_frames - grace_bias)
+        estimated_drop = int(round(adjusted_drop_frames)) if expected_frames > 0 else 0
         if self.last_chart_drop_count is None or self.last_chart_drop_elapsed is None:
             drop_fps_chart = 0.0
         else:
@@ -2792,6 +2827,10 @@ class DiagnosticWorker(threading.Thread):
             missed_packets=self.rtp_missed_packets,
         )
 
+        chart_fps = self._normalize_chart_fps(
+            realtime_fps if realtime_fps is not None else instant_fps_calc,
+            fps_nominal,
+        )
         timeline_point = {
             "elapsed_sec": round(analysis_elapsed, 3),
             "ffmpeg_elapsed_sec": round(elapsed, 3),
@@ -2803,10 +2842,7 @@ class DiagnosticWorker(threading.Thread):
             "bandwidth_kbps_current": round(bitrate_kbps, 3) if bitrate_kbps is not None else 0.0,
             "total_size_bytes": int(total_size_bytes),
             "fps_realtime_num": round(realtime_fps, 3) if realtime_fps is not None else 0.0,
-            "capture_fps_for_chart": round(
-                realtime_fps if realtime_fps is not None else instant_fps_calc,
-                3,
-            ),
+            "capture_fps_for_chart": round(chart_fps, 3),
             "drop_fps_for_chart": round(drop_fps_chart, 3),
             "health_score": int(health_score),
             "warning_count": int(self.warning_count),
@@ -2837,10 +2873,7 @@ class DiagnosticWorker(threading.Thread):
             "speed": payload.get("speed", "N/A"),
             "fps_realtime": payload.get("fps", "N/A"),
             "fps_realtime_num": round(realtime_fps, 3) if realtime_fps is not None else 0.0,
-            "capture_fps_for_chart": round(
-                realtime_fps if realtime_fps is not None else instant_fps_calc,
-                3,
-            ),
+            "capture_fps_for_chart": round(chart_fps, 3),
             "drop_fps_for_chart": round(drop_fps_chart, 3),
             "bitrate": payload.get("bitrate", "N/A"),
             "bandwidth_kbps_current": round(bitrate_kbps, 3) if bitrate_kbps is not None else 0.0,
@@ -2886,7 +2919,7 @@ class DiagnosticWorker(threading.Thread):
         validation_backend = "gstreamer" if engine_mode == "gstreamer" else ("ffprobe" if self.context.ffprobe_path else "ffmpeg")
 
         final_progress = self.last_progress or {}
-        stream_fps = float(self.stream_info.get("fps", 0.0) or 0.0)
+        stream_fps = self._resolve_effective_nominal_fps()
         if stream_fps <= 0:
             stream_fps = self.fallback_nominal_fps or safe_mean(self.frame_rate_samples)
         media_elapsed = float(final_progress.get("elapsed_sec", 0.0) or 0.0)
@@ -2985,6 +3018,7 @@ class DiagnosticWorker(threading.Thread):
                 "edge_normalization": {
                     "expected_frame_grace_start_sec": EXPECTED_FRAME_GRACE_START_SEC,
                     "expected_frame_grace_end_sec": EXPECTED_FRAME_GRACE_END_SEC,
+                    "startup_drop_grace_bias_frames": round(float(self.drop_grace_bias or 0.0), 3),
                     "analysis_duration_capped_to_requested_duration": True,
                     "tail_end_snapshot_ignored_when_no_new_frames": engine_mode != "gstreamer",
                 },
@@ -3045,6 +3079,7 @@ class DiagnosticWorker(threading.Thread):
             "stream_info": self.stream_info,
             "summary": {
                 "stream_nominal_fps": stream_fps,
+                "target_fps_requested": round(float(self.context.target_fps or 0.0), 3),
                 "stream_codec_name": str(self.stream_info.get("codec_name", "") or ""),
                 "stream_codec_display": str(
                     self.stream_info.get(
@@ -3705,6 +3740,11 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
         ("Nominal FPS", str(summary.get("stream_nominal_fps", "N/A")),
          "Frame rate the camera reports in its stream metadata."),
         (
+            "Target FPS (requested override)",
+            str(summary.get("target_fps_requested", 0)),
+            "0 means auto from stream metadata. Positive value forces diagnostic baseline FPS.",
+        ),
+        (
             "Frames Received / Expected",
             f"{frames_received} / {summary.get('expected_frames', 'N/A')}",
             "Expected = nominal FPS x run duration. Gap = estimated drops.",
@@ -4313,6 +4353,7 @@ class DiagnosticApp:
 
         self.rtsp_var = tk.StringVar()
         self.duration_var = tk.StringVar(value="60")
+        self.target_fps_var = tk.StringVar(value="0")
         self.engine_var = tk.StringVar(value="ffmpeg")
         self.transport_mode_var = tk.StringVar(value="auto")
         self.status_var = tk.StringVar(value="Idle")
@@ -4552,36 +4593,41 @@ class DiagnosticApp:
         self.engine_combo.grid(row=1, column=5, sticky="ew", padx=(8, 0), pady=(8, 0))
         self.engine_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_engine_ui())
 
-        ttk.Label(input_frame, text="Reports Folder").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(input_frame, textvariable=self.report_dir_var, width=65).grid(
-            row=2, column=1, columnspan=4, sticky="ew", padx=(8, 0), pady=(8, 0)
-        )
-        ttk.Button(input_frame, text="Browse", command=self.choose_report_dir).grid(
-            row=2, column=5, sticky="e", padx=(8, 0), pady=(8, 0)
+        ttk.Label(input_frame, text="Target FPS (0=Auto)").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(input_frame, textvariable=self.target_fps_var, width=14).grid(
+            row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
         )
 
-        ttk.Label(input_frame, text="FFmpeg").grid(row=3, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(input_frame, textvariable=self.ffmpeg_var, width=95, state="readonly").grid(
-            row=3, column=1, columnspan=5, sticky="ew", padx=(8, 0), pady=(8, 0)
+        ttk.Label(input_frame, text="Reports Folder").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(input_frame, textvariable=self.report_dir_var, width=65).grid(
+            row=3, column=1, columnspan=4, sticky="ew", padx=(8, 0), pady=(8, 0)
         )
-        ttk.Label(input_frame, text="FFprobe").grid(row=4, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(input_frame, textvariable=self.ffprobe_var, width=95, state="readonly").grid(
+        ttk.Button(input_frame, text="Browse", command=self.choose_report_dir).grid(
+            row=3, column=5, sticky="e", padx=(8, 0), pady=(8, 0)
+        )
+
+        ttk.Label(input_frame, text="FFmpeg").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(input_frame, textvariable=self.ffmpeg_var, width=95, state="readonly").grid(
             row=4, column=1, columnspan=5, sticky="ew", padx=(8, 0), pady=(8, 0)
         )
-        ttk.Label(input_frame, text="FFplay").grid(row=5, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(input_frame, textvariable=self.ffplay_var, width=95, state="readonly").grid(
+        ttk.Label(input_frame, text="FFprobe").grid(row=5, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(input_frame, textvariable=self.ffprobe_var, width=95, state="readonly").grid(
             row=5, column=1, columnspan=5, sticky="ew", padx=(8, 0), pady=(8, 0)
         )
-        ttk.Label(input_frame, text="GStreamer").grid(row=6, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(input_frame, textvariable=self.gstreamer_var, width=95, state="readonly").grid(
+        ttk.Label(input_frame, text="FFplay").grid(row=6, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(input_frame, textvariable=self.ffplay_var, width=95, state="readonly").grid(
             row=6, column=1, columnspan=5, sticky="ew", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Label(input_frame, text="GStreamer").grid(row=7, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(input_frame, textvariable=self.gstreamer_var, width=95, state="readonly").grid(
+            row=7, column=1, columnspan=5, sticky="ew", padx=(8, 0), pady=(8, 0)
         )
         self.auto_preview_chk = ttk.Checkbutton(
             input_frame,
             text="Auto-start live preview during test",
             variable=self.auto_preview_var,
         )
-        self.auto_preview_chk.grid(row=7, column=1, columnspan=5, sticky="w", pady=(8, 0))
+        self.auto_preview_chk.grid(row=8, column=1, columnspan=5, sticky="w", pady=(8, 0))
 
         for col in (1, 2, 3, 4, 5):
             input_frame.columnconfigure(col, weight=1)
@@ -5077,6 +5123,13 @@ class DiagnosticApp:
         except ValueError:
             messagebox.showerror("Invalid input", "Duration must be a positive integer.")
             return
+        try:
+            target_fps = float(self.target_fps_var.get().strip() or "0")
+            if target_fps < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Invalid input", "Target FPS must be 0 (auto) or a positive number.")
+            return
 
         report_dir = Path(self.report_dir_var.get().strip() or str(self.reports_dir))
         try:
@@ -5127,6 +5180,7 @@ class DiagnosticApp:
             gst_launch_path=self.gst_launch_path,
             gst_play_path=self.gst_play_path,
             gst_discoverer_path=self.gst_discoverer_path,
+            target_fps=target_fps,
             output_dir=str(report_dir),
             run_id=run_id,
         )
