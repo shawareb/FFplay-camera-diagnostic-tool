@@ -164,6 +164,27 @@ def cumulative_to_rate(values: list[float], timeline_sec: list[float]) -> list[f
     return rates
 
 
+def smooth_series(values: list[float], window: int = 3) -> list[float]:
+    if not values:
+        return []
+    if window <= 1:
+        return [float(v) for v in values]
+    smoothed: list[float] = []
+    half = max(1, window // 2)
+    for idx in range(len(values)):
+        start = max(0, idx - half)
+        end = min(len(values), idx + half + 1)
+        subset = [max(0.0, float(v)) for v in values[start:end]]
+        smoothed.append(safe_mean(subset))
+    return smoothed
+
+
+def clamp_series(values: list[float], cap: float) -> list[float]:
+    if cap <= 0:
+        return [max(0.0, float(v)) for v in values]
+    return [min(max(0.0, float(v)), cap) for v in values]
+
+
 def parse_float_token(value: str) -> Optional[float]:
     if not value:
         return None
@@ -409,8 +430,13 @@ def generate_report_charts_pillow(report_data: dict, charts_dir: Path) -> dict[s
     drops_plot = [drops[index] for index in plot_indices]
     drop_rate_plot = [drop_rate[index] for index in plot_indices]
     bandwidth_plot = [bandwidth[index] for index in plot_indices]
-    received_rate_plot = cumulative_to_rate(frames_plot, wall_elapsed_plot)
-    dropped_rate_plot = cumulative_to_rate(drops_plot, wall_elapsed_plot)
+    received_rate_plot = smooth_series(cumulative_to_rate(frames_plot, wall_elapsed_plot), window=3)
+    dropped_rate_plot = smooth_series(cumulative_to_rate(drops_plot, wall_elapsed_plot), window=3)
+    summary = report_data.get("summary", {})
+    nominal_fps = float(summary.get("stream_nominal_fps", 0.0) or 0.0)
+    if nominal_fps > 0:
+        received_rate_plot = clamp_series(received_rate_plot, nominal_fps * 1.25)
+        dropped_rate_plot = clamp_series(dropped_rate_plot, nominal_fps * 1.25)
 
     title_font = load_chart_font(30, bold=True)
     body_font = load_chart_font(18)
@@ -584,7 +610,6 @@ def generate_report_charts_pillow(report_data: dict, charts_dir: Path) -> dict[s
         draw_text(draw, (rect[0] + 110, rect[1] - 24), "Wall", fill="#BC6C25", font=small_font)
         save_chart(img, "media_vs_wall.png")
 
-    summary = report_data.get("summary", {})
     received_frames = float(summary.get("frames_received", 0.0) or 0.0)
     dropped_frames = float(summary.get("estimated_dropped_frames", 0.0) or 0.0)
     total_frames = max(1.0, received_frames + dropped_frames)
@@ -653,8 +678,12 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         drops_plot = [drops[index] for index in plot_indices]
         drop_rate_plot = [drop_rate[index] for index in plot_indices]
         bandwidth_plot = [bandwidth[index] for index in plot_indices]
-        received_rate_plot = cumulative_to_rate(frames_plot, wall_elapsed_plot)
-        dropped_rate_plot = cumulative_to_rate(drops_plot, wall_elapsed_plot)
+        received_rate_plot = smooth_series(cumulative_to_rate(frames_plot, wall_elapsed_plot), window=3)
+        dropped_rate_plot = smooth_series(cumulative_to_rate(drops_plot, wall_elapsed_plot), window=3)
+        nominal_fps = float((report_data.get("summary", {}) or {}).get("stream_nominal_fps", 0.0) or 0.0)
+        if nominal_fps > 0:
+            received_rate_plot = clamp_series(received_rate_plot, nominal_fps * 1.25)
+            dropped_rate_plot = clamp_series(dropped_rate_plot, nominal_fps * 1.25)
 
         # Combined chart: interval frame bars + live bandwidth line.
         fig1, ax1 = plt.subplots(figsize=(10.8, 5.2), facecolor="#071523")
@@ -694,7 +723,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
                 va="bottom",
                 alpha=0.85,
             )
-        ax1.set_title("Live Dashboard  â€”  Frames Received vs Dropped + Bandwidth", color="#F8FAFC", fontsize=11, pad=6)
+        ax1.set_title("Live Dashboard - Frames Received vs Dropped + Bandwidth", color="#F8FAFC", fontsize=11, pad=6)
         ax1.set_xlabel("Elapsed Time (sec)", color="#E0E1DD")
         ax1.set_ylabel("Frames per Second", color="#E0E1DD")
         ax1.grid(True, axis="y", alpha=0.20, color="#37506B")
@@ -763,7 +792,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         gap = max(0.0, final_expected - final_received)
         gap_pct = (gap / final_expected * 100.0) if final_expected > 0 else 0.0
         ax_expected.set_title(
-            f"Expected vs Received Frames  â€”  Final gap: {gap:.0f} frames ({gap_pct:.1f}%)",
+            f"Expected vs Received Frames - Final gap: {gap:.0f} frames ({gap_pct:.1f}%)",
             fontsize=11, pad=6,
         )
         ax_expected.set_xlabel("Elapsed Time (sec)")
@@ -782,12 +811,15 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         out["expected_vs_received"] = str(expected_chart)
 
         fig2, (ax_mid, ax_bot) = plt.subplots(2, 1, figsize=(10, 6.0), sharex=True)
-        avg_fps = safe_mean([v for v in realtime_fps if v > 0])
-        ax_mid.plot(x, realtime_fps, color="#2A9D8F", linewidth=1.8, label="Realtime FPS")
+        realtime_fps_plot = smooth_series(realtime_fps, window=5)
+        if nominal_fps > 0:
+            realtime_fps_plot = clamp_series(realtime_fps_plot, nominal_fps * 1.25)
+        avg_fps = safe_mean([v for v in realtime_fps_plot if v > 0])
+        ax_mid.plot(x, realtime_fps_plot, color="#2A9D8F", linewidth=1.8, label="Realtime FPS (smoothed)")
         if avg_fps > 0:
             ax_mid.axhline(avg_fps, color="#2A9D8F", linewidth=1.0, linestyle="--", alpha=0.60, label=f"Avg {avg_fps:.1f} FPS")
         ax_mid.set_ylabel("Realtime FPS")
-        ax_mid.set_title("Quality Timeline  â€”  FPS & Health Score over Time", pad=6)
+        ax_mid.set_title("Quality Timeline - FPS & Health Score over Time", pad=6)
         ax_mid.legend(loc="upper right", fontsize=8)
         ax_mid.grid(True, alpha=0.25)
 
@@ -801,7 +833,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         ax_bot.axhline(90, color="#2dc653", linewidth=0.8, linestyle=":", alpha=0.7)
         ax_bot.axhline(75, color="#80c900", linewidth=0.8, linestyle=":", alpha=0.7)
         ax_bot.axhline(55, color="#e63946", linewidth=0.8, linestyle=":", alpha=0.7)
-        ax_bot.set_ylabel("Health Score (0â€“100)")
+        ax_bot.set_ylabel("Health Score (0-100)")
         ax_bot.set_xlabel("Elapsed Time (sec)")
         ax_bot.set_ylim(0, 105)
         ax_bot.grid(True, alpha=0.20)
@@ -822,7 +854,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         ax_drop_top.fill_between(x, drops, color="#E63946", alpha=0.16)
         final_drops = drops[-1] if drops else 0
         ax_drop_top.set_ylabel("Cumulative Drops")
-        ax_drop_top.set_title(f"Drop Timeline  â€”  Total dropped: {final_drops:.0f} frames", pad=6)
+        ax_drop_top.set_title(f"Drop Timeline - Total dropped: {final_drops:.0f} frames", pad=6)
         ax_drop_top.grid(True, alpha=0.25)
         ax_drop_bottom.bar(x_plot, dropped_rate_plot, color="#F94144", alpha=0.75, label="Drops / sec")
         ax_drop_bottom.plot(
@@ -864,7 +896,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
             ax_bw.axvline(bw_mean, color="#F4A261", linewidth=2.0, linestyle="--", label=f"Mean: {bw_mean:.0f} kbps")
             ax_bw.axvline(bw_med, color="#2A9D8F", linewidth=1.8, linestyle=":", label=f"Median: {bw_med:.0f} kbps")
             ax_bw.axvline(bw_p95, color="#E63946", linewidth=1.5, linestyle="-.", label=f"P95: {bw_p95:.0f} kbps")
-            ax_bw.set_title(f"Bandwidth Distribution  â€”  Mean {bw_mean:.0f} kbps  |  P95 {bw_p95:.0f} kbps", pad=6)
+            ax_bw.set_title(f"Bandwidth Distribution - Mean {bw_mean:.0f} kbps  |  P95 {bw_p95:.0f} kbps", pad=6)
             ax_bw.set_xlabel("Bandwidth (kbps)")
             ax_bw.set_ylabel("Number of Samples")
             ax_bw.grid(True, axis="y", alpha=0.25)
@@ -887,7 +919,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
             ax_clock.fill_between(x, x, wall_elapsed, color="#BC6C25", alpha=0.18, label="Clock drift")
             drift_values = [abs(w - m) for w, m in zip(wall_elapsed, x)]
             max_drift = max(drift_values) if drift_values else 0.0
-            ax_clock.set_title(f"Media Clock vs Wall Clock  â€”  Max drift: {max_drift:.2f}s", pad=6)
+            ax_clock.set_title(f"Media Clock vs Wall Clock - Max drift: {max_drift:.2f}s", pad=6)
             ax_clock.set_xlabel("Timeline Sample (sec)")
             ax_clock.set_ylabel("Elapsed Time (sec)")
             ax_clock.grid(True, alpha=0.25)
@@ -924,7 +956,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         for autotext in autotexts:
             autotext.set_fontsize(9)
             autotext.set_fontweight("bold")
-        ax3.set_title(f"Frame Distribution  â€”  {total_f:.0f} total frames", pad=8)
+        ax3.set_title(f"Frame Distribution - {total_f:.0f} total frames", pad=8)
         pie_chart = charts_dir / "frame_distribution_pie.png"
         fig3.tight_layout()
         fig3.savefig(pie_chart, dpi=160)
@@ -946,7 +978,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
                         str(int(val)),
                         ha="center", va="bottom", fontsize=9, fontweight="bold",
                     )
-            ax4.set_title("Warning Categories  â€”  by type", pad=6)
+            ax4.set_title("Warning Categories - by type", pad=6)
             ax4.set_ylabel("Warning Count")
             ax4.grid(True, axis="y", alpha=0.25)
             fig4.text(
@@ -3264,10 +3296,24 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
         @staticmethod
         def _sanitize_text(value: Any) -> str:
             text = str(value) if value is not None else ""
+            if any(token in text for token in ("Ã", "â", "Â", "ï»¿")):
+                try:
+                    text = text.encode("latin-1").decode("utf-8")
+                except Exception:
+                    pass
             text = (
                 text.replace("—", "-")
                 .replace("–", "-")
                 .replace("−", "-")
+                .replace("â€”", "-")
+                .replace("â€“", "-")
+                .replace("Ã—", "x")
+                .replace("â‰¥", ">=")
+                .replace("â‰¤", "<=")
+                .replace("â†’", "->")
+                .replace("â€¦", "...")
+                .replace("â€¢", "-")
+                .replace("Â", "")
                 .replace("“", '"')
                 .replace("”", '"')
                 .replace("’", "'")
@@ -3476,6 +3522,16 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     pdf.add_page()
     section_header("Key Technical Metrics", "Detailed measured values from the diagnostic run")
+    timeline_points = report_data.get("timeline", [])
+    realtime_fps_points = [float(item.get("fps_realtime_num", 0.0) or 0.0) for item in timeline_points]
+    nominal_fps_for_spikes = float(summary.get("stream_nominal_fps", 0.0) or 0.0)
+    spike_threshold = nominal_fps_for_spikes * 1.2 if nominal_fps_for_spikes > 0 else 0.0
+    spike_count = (
+        len([v for v in realtime_fps_points if v > spike_threshold]) if spike_threshold > 0 else 0
+    )
+    spike_ratio = (
+        (spike_count / max(1, len(realtime_fps_points))) * 100.0 if realtime_fps_points else 0.0
+    )
 
     kv_rows: list[tuple[str, str, str]] = [
         (
@@ -3519,7 +3575,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
         (
             "Frames Received / Expected",
             f"{frames_received} / {summary.get('expected_frames', 'N/A')}",
-            "Expected = nominal FPS Ã— run duration. Gap = estimated drops.",
+            "Expected = nominal FPS x run duration. Gap = estimated drops.",
         ),
         (
             "Estimated Drop Rate",
@@ -3556,6 +3612,11 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
             f"{deep_fps.get('realtime_fps_avg', 'N/A')} / {deep_fps.get('realtime_fps_min', 'N/A')} / "
             f"{deep_fps.get('realtime_fps_max', 'N/A')}",
             "Realtime FPS measured by the decoder. Should stay near nominal.",
+        ),
+        (
+            "Realtime FPS spikes (>120% nominal)",
+            f"{spike_count} samples ({spike_ratio:.2f}%)",
+            "Short bursts may happen from decoder batching; persistent spikes indicate unstable timestamp delivery.",
         ),
         (
             "Freeze (events / total sec / ratio)",
