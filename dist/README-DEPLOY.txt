@@ -10,9 +10,8 @@ Optional requirement:
 - GStreamer is only needed if user selects GStreamer engine/preview.
 
 Deployment steps on target PC:
-1. Install FFmpeg (or confirm ffmpeg.exe is available).
-2. Optionally run Install-On-Other-PC.ps1 if you want bundled runtime installation.
-3. Launch one of:
+1. Run Install-On-Other-PC.ps1 as Administrator.
+2. Launch one of:
    - RTSP-Camera-Diagnostic-Portable.exe
    - RTSP-Camera-Diagnostic-Folder\RTSP-Camera-Diagnostic-Folder.exe (if folder build exists)
 
@@ -24,3 +23,5 @@ Recommended FFmpeg paths:
 Important:
 - Keep the dist folder structure unchanged when sharing full bundle.
 - One-folder build is usually less likely to trigger AV false positives.
+- Offline runtime packages are expected under:
+  dist\offline-runtime-packages\RTSP-Diagnostic-Runtimes-Offline\packages\

@@ -79,6 +79,12 @@ Output:
 dist\RTSP-Camera-Diagnostic-Portable.exe
 ```
 
+This build now also prepares an offline runtime bundle under:
+
+```text
+dist\offline-runtime-packages\RTSP-Diagnostic-Runtimes-Offline\
+```
+
 ## Lower AV False-Positive Option
 
 If one-file EXE is flagged by antivirus heuristics, build one-folder distribution:
@@ -103,9 +109,15 @@ Use `dist\RTSP-Camera-Diagnostic-Folder\RTSP-Camera-Diagnostic-Folder.exe`.
 
 When sharing to another machine:
 
-1. Share `dist\RTSP-Camera-Diagnostic-Portable.exe` (or full `dist` bundle).
-2. Ensure FFmpeg is installed on that target PC.
-3. GStreamer is optional and only needed for GStreamer engine mode.
+1. Share the full `dist` folder (recommended).
+2. On target PC, run `dist\Install-On-Other-PC.ps1` as Administrator.
+3. Then launch `RTSP-Camera-Diagnostic-Portable.exe` (or folder EXE).
+
+Notes:
+
+- Offline installer includes FFmpeg package and optionally GStreamer package.
+- FFmpeg-only installation works fine for diagnostics.
+- GStreamer remains optional and only needed for GStreamer engine/preview.
 
 Recommended FFmpeg binary locations:
 

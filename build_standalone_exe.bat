@@ -49,6 +49,13 @@ if errorlevel 1 (
 )
 
 echo.
+echo [4/4] Preparing offline runtime bundle (FFmpeg required, GStreamer optional)...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0prepare_offline_runtime_bundle.ps1"
+if errorlevel 1 (
+  echo WARNING: Offline runtime bundle was not created. EXE is still built.
+)
+
+echo.
 echo =====================================================
 echo  Build COMPLETE!
 echo  EXE: %~dp0dist\RTSP-Camera-Diagnostic-Portable.exe
