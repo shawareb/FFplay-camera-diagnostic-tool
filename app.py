@@ -261,6 +261,78 @@ def classify_warning(log_line: str) -> str:
     return "other"
 
 
+def explain_warning_line(log_line: str) -> dict[str, str]:
+    lowered = str(log_line or "").lower()
+    category = classify_warning(log_line)
+
+    explanation = ""
+    suggested_action = ""
+
+    if "error constructing the frame rps" in lowered:
+        explanation = (
+            "The HEVC decoder could not rebuild reference-picture metadata for this frame."
+        )
+        suggested_action = (
+            "Usually packet corruption/loss or unstable camera encode output. Prefer RTSP TCP, "
+            "reduce bitrate, and disable smart codecs (H.265+)."
+        )
+    elif "invalid undecodable nalu" in lowered or ("skipping invalid" in lowered and "nalu" in lowered):
+        explanation = (
+            "A video NAL unit was malformed or incomplete, so the frame segment was dropped."
+        )
+        suggested_action = (
+            "Check network stability and MTU, then test with lower bitrate or H.264 to confirm source integrity."
+        )
+    elif "non-existing pps" in lowered or "non-existing sps" in lowered:
+        explanation = (
+            "Decoder received frames before the required parameter sets (SPS/PPS/VPS) were available."
+        )
+        suggested_action = (
+            "Lower GOP interval (more frequent keyframes) and verify camera firmware/encoder stability."
+        )
+    elif "timed out" in lowered or "timeout" in lowered:
+        explanation = "No data/response arrived before the timeout window."
+        suggested_action = (
+            "Check camera reachability, firewall/NAT, and transport mode. TCP is usually safer than UDP."
+        )
+    elif "401 unauthorized" in lowered or "unauthorized" in lowered:
+        explanation = "Authentication failed for stream or control channel."
+        suggested_action = "Verify username/password in the RTSP URL and camera auth mode."
+    elif "404 not found" in lowered:
+        explanation = "The requested RTSP path does not exist on the camera."
+        suggested_action = "Validate stream path/profile on the camera (main/sub stream URL)."
+    elif "connection refused" in lowered:
+        explanation = "Target host rejected TCP connection on the requested port."
+        suggested_action = "Confirm RTSP service is enabled and firewall allows inbound port 554."
+    elif "connection reset" in lowered or "broken pipe" in lowered:
+        explanation = "The camera or an intermediate network device terminated the session unexpectedly."
+        suggested_action = "Check network equipment stability and camera session limits."
+    elif "missed" in lowered and "packet" in lowered:
+        explanation = "Packet loss was detected while receiving the stream."
+        suggested_action = "Use TCP transport and inspect switch/cabling/network congestion."
+    elif category == "decode":
+        explanation = "Decoder reported corrupted or invalid compressed video data."
+        suggested_action = "Check encoder health, firmware, and transport reliability."
+    elif category == "rtsp_protocol":
+        explanation = "RTSP protocol-level warning was emitted."
+        suggested_action = "Verify RTSP URL, credentials, and transport compatibility."
+    elif category == "buffering":
+        explanation = "Buffer overrun/underrun condition indicates unstable packet delivery rate."
+        suggested_action = "Stabilize bandwidth and consider increasing receiver buffering."
+    elif category == "error":
+        explanation = "General runtime error line from toolchain logs."
+        suggested_action = "Review surrounding log lines for root-cause context."
+    else:
+        explanation = "Generic warning line captured during diagnostics."
+        suggested_action = "Review repeated patterns and correlate with drops/jitter spikes."
+
+    return {
+        "category": category,
+        "explanation": explanation,
+        "suggested_action": suggested_action,
+    }
+
+
 def extract_missed_packets(log_line: str) -> int:
     match = re.search(r"missed\s+(\d+)\s+packets?", log_line.lower())
     if not match:
@@ -1367,172 +1439,6 @@ def apply_camera_details_to_stream_info(stream_info: dict[str, Any], camera_deta
     return merged
 
 
-def check_tcp_port_open(host: str, port: int, timeout_sec: float = 1.5) -> tuple[bool, float, str]:
-    start = time.perf_counter()
-    try:
-        with socket.create_connection((host, int(port)), timeout=max(0.3, timeout_sec)):
-            elapsed_ms = (time.perf_counter() - start) * 1000.0
-            return True, elapsed_ms, ""
-    except Exception as exc:
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
-        return False, elapsed_ms, str(exc)
-
-
-def run_ping_latency_test(host: str, sample_count: int = 3, timeout_ms: int = 900) -> tuple[float, float, str]:
-    try:
-        result = subprocess.run(
-            ["ping", "-n", str(max(1, sample_count)), "-w", str(max(300, timeout_ms)), host],
-            capture_output=True,
-            text=True,
-            check=False,
-            encoding="utf-8",
-            errors="replace",
-            **hidden_subprocess_kwargs(),
-        )
-    except Exception as exc:
-        return 0.0, 100.0, f"Ping failed: {exc}"
-
-    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
-    avg_match = re.search(r"Average\s*=\s*([0-9]+)\s*ms", combined, re.IGNORECASE)
-    loss_match = re.search(r"\(([0-9]+)%\s*loss\)", combined, re.IGNORECASE)
-    fallback_samples = [float(x) for x in re.findall(r"time[=<]\s*([0-9]+)\s*ms", combined, re.IGNORECASE)]
-
-    avg_ms = float(avg_match.group(1)) if avg_match else (safe_mean(fallback_samples) if fallback_samples else 0.0)
-    loss_pct = float(loss_match.group(1)) if loss_match else (100.0 if result.returncode != 0 else 0.0)
-    error = ""
-    if result.returncode != 0 and not fallback_samples:
-        error = "Ping command returned errors."
-    return round(avg_ms, 3), round(loss_pct, 3), error
-
-
-def _ping_df_probe(host: str, payload_size: int, timeout_ms: int = 900) -> bool:
-    try:
-        result = subprocess.run(
-            ["ping", "-n", "1", "-f", "-l", str(int(payload_size)), "-w", str(max(300, timeout_ms)), host],
-            capture_output=True,
-            text=True,
-            check=False,
-            encoding="utf-8",
-            errors="replace",
-            **hidden_subprocess_kwargs(),
-        )
-    except Exception:
-        return False
-    if result.returncode == 0:
-        return True
-    combined = "\n".join(part for part in (result.stdout, result.stderr) if part).lower()
-    if "packet needs to be fragmented" in combined or "df set" in combined:
-        return False
-    return False
-
-
-def discover_path_mtu(host: str) -> tuple[int, str]:
-    low = 500
-    high = 1472
-    best_payload = 0
-
-    if not _ping_df_probe(host, low):
-        return 0, "DF ping probe failed at minimum payload."
-
-    while low <= high:
-        mid = (low + high) // 2
-        if _ping_df_probe(host, mid):
-            best_payload = mid
-            low = mid + 1
-        else:
-            high = mid - 1
-
-    if best_payload <= 0:
-        return 0, "Path MTU could not be determined."
-    return int(best_payload + 28), ""
-
-
-def run_traceroute_hop_count(host: str, max_hops: int = 20, timeout_ms: int = 700) -> tuple[int, str]:
-    try:
-        result = subprocess.run(
-            ["tracert", "-d", "-h", str(max(1, max_hops)), "-w", str(max(200, timeout_ms)), host],
-            capture_output=True,
-            text=True,
-            check=False,
-            encoding="utf-8",
-            errors="replace",
-            **hidden_subprocess_kwargs(),
-        )
-    except Exception as exc:
-        return 0, f"Traceroute failed: {exc}"
-
-    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
-    hop_values = [int(x) for x in re.findall(r"^\s*([0-9]+)\s+", combined, flags=re.MULTILINE)]
-    if not hop_values:
-        return 0, "Traceroute returned no hop lines."
-    return max(hop_values), ""
-
-
-def run_network_path_diagnostics(rtsp_url: str) -> dict[str, Any]:
-    conn = parse_rtsp_connection_details(rtsp_url)
-    host = str(conn.get("host", "") or "")
-    rtsp_port = int(conn.get("rtsp_port", 554) or 554)
-    diagnostics: dict[str, Any] = {
-        "host": host,
-        "rtsp_port": rtsp_port,
-        "ping_avg_ms": 0.0,
-        "ping_packet_loss_percent": 0.0,
-        "port_scan": {},
-        "path_mtu_bytes": 0,
-        "traceroute_hop_count": 0,
-        "errors": [],
-    }
-
-    if not host:
-        diagnostics["errors"].append("RTSP host missing for network diagnostics.")
-        return diagnostics
-
-    primary_ports = [rtsp_port]
-    if 554 not in primary_ports:
-        primary_ports.append(554)
-    for port in primary_ports:
-        is_open, latency_ms, error = check_tcp_port_open(host, port, timeout_sec=1.6)
-        diagnostics["port_scan"][str(port)] = {
-            "open": bool(is_open),
-            "connect_latency_ms": round(float(latency_ms), 3),
-            "error": error,
-        }
-        if error and not is_open:
-            diagnostics["errors"].append(f"Port {port}: {error}")
-
-    ping_avg, ping_loss, ping_error = run_ping_latency_test(host, sample_count=3, timeout_ms=900)
-    diagnostics["ping_avg_ms"] = round(float(ping_avg), 3)
-    diagnostics["ping_packet_loss_percent"] = round(float(ping_loss), 3)
-    if ping_error:
-        diagnostics["errors"].append(ping_error)
-
-    mtu_value, mtu_error = discover_path_mtu(host)
-    diagnostics["path_mtu_bytes"] = int(mtu_value)
-    if mtu_error:
-        diagnostics["errors"].append(mtu_error)
-
-    hop_count, hop_error = run_traceroute_hop_count(host, max_hops=20, timeout_ms=700)
-    diagnostics["traceroute_hop_count"] = int(hop_count)
-    if hop_error:
-        diagnostics["errors"].append(hop_error)
-
-    return diagnostics
-
-
-def apply_network_diagnostics_to_stream_info(stream_info: dict[str, Any], network: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(stream_info or {})
-    data = dict(network or {})
-    merged["network_diagnostics"] = data
-    merged["ping_avg_ms"] = float(data.get("ping_avg_ms", 0.0) or 0.0)
-    merged["ping_packet_loss_percent"] = float(data.get("ping_packet_loss_percent", 0.0) or 0.0)
-    merged["path_mtu_bytes"] = int(data.get("path_mtu_bytes", 0) or 0)
-    merged["traceroute_hop_count"] = int(data.get("traceroute_hop_count", 0) or 0)
-    port_scan = data.get("port_scan", {}) or {}
-    port_554 = port_scan.get("554", {}) or {}
-    merged["port_554_open"] = bool(port_554.get("open", False))
-    return merged
-
-
 def shorten_text(value: str, max_len: int = 90) -> str:
     if len(value) <= max_len:
         return value
@@ -2411,7 +2317,6 @@ class DiagnosticWorker(threading.Thread):
         self.warning_samples: list[str] = []
         self.warning_breakdown: dict[str, int] = {}
         self.rtp_missed_packets = 0
-        self.network_diagnostics: dict[str, Any] = {}
         self.started_at: Optional[datetime] = None
         self.ended_at: Optional[datetime] = None
         self.monotonic_started = 0.0
@@ -2496,30 +2401,6 @@ class DiagnosticWorker(threading.Thread):
         for err in details.get("discovery_errors", []) or []:
             self.emit("log", line=f"Camera detail probe note: {err}")
 
-    def _probe_network_path(self) -> None:
-        self.emit("status", message="Running network path diagnostics (Ping/Port/MTU/Traceroute)...")
-        self.network_diagnostics = run_network_path_diagnostics(self.context.rtsp_url)
-        self.stream_info = apply_network_diagnostics_to_stream_info(self.stream_info, self.network_diagnostics)
-
-        ping_avg = float(self.network_diagnostics.get("ping_avg_ms", 0.0) or 0.0)
-        ping_loss = float(self.network_diagnostics.get("ping_packet_loss_percent", 0.0) or 0.0)
-        mtu_value = int(self.network_diagnostics.get("path_mtu_bytes", 0) or 0)
-        hops = int(self.network_diagnostics.get("traceroute_hop_count", 0) or 0)
-        port_554_open = bool(
-            (self.network_diagnostics.get("port_scan", {}) or {}).get("554", {}).get("open", False)
-        )
-
-        self.emit(
-            "log",
-            line=(
-                f"Network diagnostics: ping_avg={ping_avg:.1f} ms, "
-                f"loss={ping_loss:.1f}%, port554={'open' if port_554_open else 'closed'}, "
-                f"path_mtu={mtu_value or 'N/A'}, hops={hops or 'N/A'}"
-            ),
-        )
-        for err in self.network_diagnostics.get("errors", []) or []:
-            self.emit("log", line=f"Network diagnostic note: {err}")
-
     def run(self) -> None:
         self.started_at = datetime.now()
         self.monotonic_started = time.monotonic()
@@ -2579,7 +2460,6 @@ class DiagnosticWorker(threading.Thread):
                 ),
             )
             self._probe_camera_identity()
-            self._probe_network_path()
             self.emit("stream_info", info=self.stream_info)
             return
 
@@ -2594,7 +2474,6 @@ class DiagnosticWorker(threading.Thread):
                 str(self.stream_info.get("selected_transport", self.selected_transport))
             )
             self._probe_camera_identity()
-            self._probe_network_path()
             self.emit("stream_info", info=self.stream_info)
             return
 
@@ -2632,7 +2511,6 @@ class DiagnosticWorker(threading.Thread):
             message="FFprobe not found. Running in fallback mode using FFmpeg-only diagnostics.",
         )
         self._probe_camera_identity()
-        self._probe_network_path()
 
     def _capture_snapshot_if_possible(self) -> None:
         if not self.context.ffmpeg_path:
@@ -3502,7 +3380,6 @@ class DiagnosticWorker(threading.Thread):
             "transport": self.stream_info.get("transport_diagnostics", {}),
             "gstreamer_probe": self.gstreamer_probe_result,
             "gstreamer_runtime": self.gstreamer_runtime_details,
-            "network_path": self.network_diagnostics,
             "startup_latency_sec": round(startup_latency_sec, 3),
             "bandwidth_kbps": {
                 "avg": round(bitrate_avg, 3),
@@ -3625,11 +3502,6 @@ class DiagnosticWorker(threading.Thread):
                 "camera_mac_address": str(self.stream_info.get("camera_mac_address", "") or ""),
                 "camera_ip_address": str(self.stream_info.get("camera_ip_address", "") or ""),
                 "camera_onvif_endpoint": str(self.stream_info.get("camera_onvif_endpoint", "") or ""),
-                "ping_avg_ms": round(float(self.stream_info.get("ping_avg_ms", 0.0) or 0.0), 3),
-                "ping_packet_loss_percent": round(float(self.stream_info.get("ping_packet_loss_percent", 0.0) or 0.0), 3),
-                "path_mtu_bytes": int(self.stream_info.get("path_mtu_bytes", 0) or 0),
-                "traceroute_hop_count": int(self.stream_info.get("traceroute_hop_count", 0) or 0),
-                "port_554_open": bool(self.stream_info.get("port_554_open", False)),
                 "frames_received": frames_received,
                 "expected_frames": expected_frames,
                 "estimated_dropped_frames": estimated_drops,
@@ -3650,6 +3522,13 @@ class DiagnosticWorker(threading.Thread):
             "timeline": self.timeline_samples,
             "warning_count": self.warning_count,
             "warning_samples": self.warning_samples,
+            "warning_samples_detailed": [
+                {
+                    "line": line,
+                    **explain_warning_line(line),
+                }
+                for line in self.warning_samples
+            ],
         }
 
 
@@ -3960,11 +3839,6 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     camera_mac = str(summary.get("camera_mac_address", stream.get("camera_mac_address", "")) or "")
     camera_ip = str(summary.get("camera_ip_address", stream.get("camera_ip_address", "")) or "")
     camera_onvif = str(summary.get("camera_onvif_endpoint", stream.get("camera_onvif_endpoint", "")) or "")
-    ping_avg_ms = float(summary.get("ping_avg_ms", stream.get("ping_avg_ms", 0.0)) or 0.0)
-    ping_loss_pct = float(summary.get("ping_packet_loss_percent", stream.get("ping_packet_loss_percent", 0.0)) or 0.0)
-    path_mtu_bytes = int(summary.get("path_mtu_bytes", stream.get("path_mtu_bytes", 0)) or 0)
-    traceroute_hops = int(summary.get("traceroute_hop_count", stream.get("traceroute_hop_count", 0)) or 0)
-    port_554_open = bool(summary.get("port_554_open", stream.get("port_554_open", False)))
 
     # â”€â”€ Colour palette â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if status == "completed":
@@ -4286,21 +4160,6 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
             "Camera ONVIF Endpoint",
             camera_onvif or "N/A",
             "Device service endpoint used for metadata query.",
-        ),
-        (
-            "Ping Avg / Loss",
-            f"{ping_avg_ms:.1f} ms / {ping_loss_pct:.1f}%",
-            "ICMP reachability trend to camera host.",
-        ),
-        (
-            "Port 554 Reachability",
-            "OPEN" if port_554_open else "CLOSED",
-            "TCP connectivity check before stream start.",
-        ),
-        (
-            "Path MTU / Traceroute Hops",
-            f"{path_mtu_bytes or 'N/A'} / {traceroute_hops or 'N/A'}",
-            "Path-level diagnostics. Lower MTU can increase packet fragmentation risk.",
         ),
         (
             "RTSP Transport (req / selected)",
@@ -4634,23 +4493,43 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
             horizontal_rule()
 
     warning_samples = report_data.get("warning_samples", [])
+    warning_samples_detailed = report_data.get("warning_samples_detailed", [])
     if warning_samples:
         pdf.add_page()
-        section_header("Warning Samples", "Raw warning/error log lines captured during the run")
+        section_header("Warning Samples", "Warning lines with per-item explanation and suggested action")
         pdf.set_font("Helvetica", "I", 8)
         pdf.set_text_color(120, 130, 145)
         pdf.multi_cell(
             0, 4.5,
-            "These are the first warnings logged during the run. Use them to diagnose camera, "
-            "codec, or network-level errors.",
+            "Each warning includes a category, plain-language meaning, and recommended next step.",
             new_x=XPos.LMARGIN, new_y=YPos.NEXT,
         )
         pdf.set_text_color(0, 0, 0)
         pdf.ln(1)
-        pdf.set_font("Helvetica", "", 8)
+        page_bottom_guard = pdf.h - pdf.b_margin - 16
         for idx, warning_line in enumerate(warning_samples, start=1):
+            if idx - 1 < len(warning_samples_detailed):
+                details = warning_samples_detailed[idx - 1] or {}
+            else:
+                details = explain_warning_line(str(warning_line or ""))
+
+            category_label = str(details.get("category", "other") or "other").replace("_", " ").title()
+            explanation = str(details.get("explanation", "") or "")
+            action = str(details.get("suggested_action", "") or "")
+
+            if pdf.get_y() > page_bottom_guard:
+                pdf.add_page()
+                section_header("Warning Samples (Continued)")
+
             pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(0, 5, f"{idx}.  {warning_line}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_font("Helvetica", "B", 8.5)
+            pdf.multi_cell(0, 5.2, f"{idx}. {warning_line}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_font("Helvetica", "", 8)
+            pdf.multi_cell(0, 4.3, f"Category: {category_label}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.multi_cell(0, 4.3, f"Meaning: {explanation}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.multi_cell(0, 4.3, f"Action: {action}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.ln(0.8)
+            horizontal_rule(222, 228, 236)
 
     pdf.output(str(report_path))
 
@@ -4943,7 +4822,6 @@ class DiagnosticApp:
         self.transport_mode_var = tk.StringVar(value="auto")
         self.status_var = tk.StringVar(value="Idle")
         self.report_dir_var = tk.StringVar(value=str(self.reports_dir))
-        self.batch_file_var = tk.StringVar(value="")
         self.ffmpeg_var = tk.StringVar(value=self.ffmpeg_path or "Not found")
         self.ffprobe_var = tk.StringVar(value=self.ffprobe_path or "Not found (FFmpeg fallback mode)")
         self.ffplay_var = tk.StringVar(value=self.ffplay_path or "Not found")
@@ -4951,7 +4829,6 @@ class DiagnosticApp:
             value=self.gst_launch_path or self.gst_discoverer_path or self.gst_play_path or "Not found"
         )
         self.auto_preview_var = tk.BooleanVar(value=False)
-        self.dark_mode_var = tk.BooleanVar(value=False)
 
         self.stream_var = tk.StringVar(value="N/A")
         self.transport_live_var = tk.StringVar(value="N/A")
@@ -4971,24 +4848,14 @@ class DiagnosticApp:
         self.health_var = tk.StringVar(value="100 (N/A)")
         self.camera_identity_var = tk.StringVar(value="N/A")
         self.camera_mac_var = tk.StringVar(value="N/A")
-        self.ping_latency_var = tk.StringVar(value="N/A")
-        self.port_554_var = tk.StringVar(value="N/A")
-        self.path_mtu_var = tk.StringVar(value="N/A")
-        self.traceroute_hops_var = tk.StringVar(value="N/A")
         self.last_report_var = tk.StringVar(value="-")
         self.bandwidth_chart_points: list[float] = []
         self.received_chart_points: list[float] = []
         self.dropped_chart_points: list[float] = []
-        self.batch_running = False
-        self.batch_queue: list[str] = []
-        self.batch_results: list[dict[str, Any]] = []
-        self.batch_total = 0
-        self.batch_started_at: Optional[datetime] = None
 
         self._set_window_icon()
         self._apply_theme()
         self._build_ui()
-        self._apply_theme()
         self._refresh_engine_ui()
         self.root.after(200, self._drain_events)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -5062,64 +4929,33 @@ class DiagnosticApp:
             self.auto_preview_chk.configure(state=tk.DISABLED)
             self.auto_preview_var.set(False)
 
-    def toggle_dark_mode(self) -> None:
-        self._apply_theme(dark=bool(self.dark_mode_var.get()))
-
-    def _apply_theme(self, dark: Optional[bool] = None) -> None:
-        if dark is None:
-            dark = bool(self.dark_mode_var.get()) if hasattr(self, "dark_mode_var") else False
-
-        if dark:
-            root_bg = "#0B1220"
-            panel_bg = "#111A2B"
-            border = "#263244"
-            text_primary = "#E2E8F0"
-            text_secondary = "#94A3B8"
-            entry_bg = "#0F172A"
-            button_secondary_bg = "#1E293B"
-            button_secondary_active = "#334155"
-            progress_trough = "#1E293B"
-            logs_bg = "#020817"
-            logs_fg = "#DCE7F7"
-        else:
-            root_bg = "#F4F7FB"
-            panel_bg = "#FFFFFF"
-            border = "#DDE4EE"
-            text_primary = "#0F172A"
-            text_secondary = "#475569"
-            entry_bg = "#FFFFFF"
-            button_secondary_bg = "#E2E8F0"
-            button_secondary_active = "#CBD5E1"
-            progress_trough = "#E2E8F0"
-            logs_bg = "#0F172A"
-            logs_fg = "#E2E8F0"
-
+    def _apply_theme(self) -> None:
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
         except Exception:
             pass
-        self.root.configure(bg=root_bg)
-        style.configure(".", background=root_bg, foreground=text_primary, font=("Segoe UI", 10))
-        style.configure("TLabelframe", background=panel_bg, bordercolor=border, relief="solid")
-        style.configure("TLabelframe.Label", background=panel_bg, foreground=text_primary, font=("Segoe UI Semibold", 10))
-        style.configure("TFrame", background=root_bg)
-        style.configure("Card.TFrame", background=panel_bg)
-        style.configure("Section.TLabelframe", background=panel_bg, bordercolor=border, relief="solid")
+        self.root.configure(bg="#F4F7FB")
+        style.configure(".", background="#F4F7FB", foreground="#0F172A", font=("Segoe UI", 10))
+        style.configure("TLabelframe", background="#FFFFFF", bordercolor="#DDE4EE", relief="solid")
+        style.configure("TLabelframe.Label", background="#FFFFFF", foreground="#0F172A", font=("Segoe UI Semibold", 10))
+        style.configure("TFrame", background="#F4F7FB")
+        style.configure("Card.TFrame", background="#FFFFFF")
+        style.configure("Section.TLabelframe", background="#FFFFFF", bordercolor="#DDE4EE", relief="solid")
         style.configure(
             "Section.TLabelframe.Label",
-            background=panel_bg,
-            foreground=text_primary,
+            background="#FFFFFF",
+            foreground="#0F172A",
             font=("Segoe UI Semibold", 10),
         )
-        style.configure("Header.TLabel", background=root_bg, foreground=text_primary, font=("Segoe UI Semibold", 18))
-        style.configure("SubHeader.TLabel", background=root_bg, foreground=text_secondary, font=("Segoe UI", 10))
-        style.configure("MetricName.TLabel", background=panel_bg, foreground=text_secondary, font=("Segoe UI Semibold", 9))
-        style.configure("MetricValue.TLabel", background=panel_bg, foreground=text_primary, font=("Segoe UI", 10))
-        style.configure("TLabel", background=root_bg, foreground=text_primary)
-        style.configure("TEntry", fieldbackground=entry_bg, foreground=text_primary)
-        style.configure("TCombobox", fieldbackground=entry_bg, foreground=text_primary)
-        style.map("TCombobox", fieldbackground=[("readonly", entry_bg)], foreground=[("readonly", text_primary)])
+        style.configure("Header.TLabel", background="#F4F7FB", foreground="#0F172A", font=("Segoe UI Semibold", 18))
+        style.configure("SubHeader.TLabel", background="#F4F7FB", foreground="#475569", font=("Segoe UI", 10))
+        style.configure("MetricName.TLabel", background="#FFFFFF", foreground="#475569", font=("Segoe UI Semibold", 9))
+        style.configure("MetricValue.TLabel", background="#FFFFFF", foreground="#0F172A", font=("Segoe UI", 10))
+        style.configure("TLabel", background="#F4F7FB", foreground="#0F172A")
+        style.configure("TEntry", fieldbackground="#FFFFFF", foreground="#0F172A")
+        style.configure("TCombobox", fieldbackground="#FFFFFF", foreground="#0F172A")
+        style.map("TCombobox", fieldbackground=[("readonly", "#FFFFFF")], foreground=[("readonly", "#0F172A")])
         style.configure("TButton", padding=(11, 7), font=("Segoe UI Semibold", 9))
         style.configure("Primary.TButton", padding=(12, 8), background="#0EA5E9", foreground="#FFFFFF")
         style.map(
@@ -5133,27 +4969,16 @@ class DiagnosticApp:
             background=[("active", "#DC2626"), ("pressed", "#B91C1C")],
             foreground=[("disabled", "#FECACA"), ("!disabled", "#FFFFFF")],
         )
-        style.configure("Secondary.TButton", padding=(11, 7), background=button_secondary_bg, foreground=text_primary)
-        style.map("Secondary.TButton", background=[("active", button_secondary_active), ("pressed", "#94A3B8")])
+        style.configure("Secondary.TButton", padding=(11, 7), background="#E2E8F0", foreground="#0F172A")
+        style.map("Secondary.TButton", background=[("active", "#CBD5E1"), ("pressed", "#94A3B8")])
         style.configure(
             "Accent.Horizontal.TProgressbar",
-            troughcolor=progress_trough,
-            bordercolor=progress_trough,
+            troughcolor="#E2E8F0",
+            bordercolor="#E2E8F0",
             background="#0EA5E9",
             lightcolor="#0EA5E9",
             darkcolor="#0EA5E9",
         )
-
-        if hasattr(self, "main_canvas"):
-            try:
-                self.main_canvas.configure(bg=root_bg)
-            except Exception:
-                pass
-        if hasattr(self, "logs"):
-            try:
-                self.logs.configure(bg=logs_bg, fg=logs_fg, insertbackground="#FFFFFF")
-            except Exception:
-                pass
 
     def _set_window_icon(self) -> None:
         ico_path = get_resource_path("assets/camera_icon.ico")
@@ -5188,15 +5013,7 @@ class DiagnosticApp:
 
         header = ttk.Frame(wrapper)
         header.pack(fill=tk.X, pady=(0, 10))
-        header_top = ttk.Frame(header)
-        header_top.pack(fill=tk.X)
-        ttk.Label(header_top, text="RTSP Camera Frame Drop Diagnostic", style="Header.TLabel").pack(side=tk.LEFT, anchor="w")
-        ttk.Checkbutton(
-            header_top,
-            text="Dark Mode",
-            variable=self.dark_mode_var,
-            command=self.toggle_dark_mode,
-        ).pack(side=tk.RIGHT, anchor="e")
+        ttk.Label(header, text="RTSP Camera Frame Drop Diagnostic", style="Header.TLabel").pack(anchor="w")
         ttk.Label(
             header,
             text=(
@@ -5278,14 +5095,6 @@ class DiagnosticApp:
         )
         self.auto_preview_chk.grid(row=8, column=1, columnspan=5, sticky="w", pady=(8, 0))
 
-        ttk.Label(input_frame, text="Batch URL File").grid(row=9, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(input_frame, textvariable=self.batch_file_var, width=65).grid(
-            row=9, column=1, columnspan=4, sticky="ew", padx=(8, 0), pady=(8, 0)
-        )
-        ttk.Button(input_frame, text="Browse Batch", command=self.choose_batch_file).grid(
-            row=9, column=5, sticky="e", padx=(8, 0), pady=(8, 0)
-        )
-
         for col in (1, 2, 3, 4, 5):
             input_frame.columnconfigure(col, weight=1)
 
@@ -5307,12 +5116,6 @@ class DiagnosticApp:
             button_frame,
             text="Start Diagnostic",
             command=self.start_test,
-            style="Primary.TButton",
-        )
-        self.batch_btn = ttk.Button(
-            button_frame,
-            text="Start Batch",
-            command=self.start_batch,
             style="Primary.TButton",
         )
         self.stop_btn = ttk.Button(
@@ -5337,7 +5140,6 @@ class DiagnosticApp:
         self.check_btn.pack(side=tk.LEFT)
         self.preview_btn.pack(side=tk.LEFT, padx=8)
         self.start_btn.pack(side=tk.LEFT, padx=8)
-        self.batch_btn.pack(side=tk.LEFT, padx=8)
         self.stop_btn.pack(side=tk.LEFT, padx=8)
         self.open_reports_btn.pack(side=tk.LEFT, padx=8)
         self.open_last_btn.pack(side=tk.LEFT)
@@ -5365,10 +5167,6 @@ class DiagnosticApp:
         self._pair(summary_frame, "Health", self.health_var, 8, 2)
         self._pair(summary_frame, "Camera Identity", self.camera_identity_var, 9, 0)
         self._pair(summary_frame, "Camera MAC", self.camera_mac_var, 9, 2)
-        self._pair(summary_frame, "Ping Avg", self.ping_latency_var, 10, 0)
-        self._pair(summary_frame, "Port 554", self.port_554_var, 10, 2)
-        self._pair(summary_frame, "Path MTU", self.path_mtu_var, 11, 0)
-        self._pair(summary_frame, "Traceroute Hops", self.traceroute_hops_var, 11, 2)
 
         summary_frame.columnconfigure(1, weight=1)
         summary_frame.columnconfigure(3, weight=1)
@@ -5461,118 +5259,6 @@ class DiagnosticApp:
                 messagebox.showerror("Folder not writable", f"Cannot write to selected folder:\n{exc}")
                 return
             self.report_dir_var.set(selected)
-
-    def choose_batch_file(self) -> None:
-        selected = filedialog.askopenfilename(
-            title="Select Batch Camera URL List",
-            filetypes=[
-                ("Text files", "*.txt"),
-                ("CSV files", "*.csv"),
-                ("All files", "*.*"),
-            ],
-            initialdir=str(self.base_dir),
-        )
-        if selected:
-            self.batch_file_var.set(selected)
-
-    def _load_batch_urls(self, file_path: Path) -> list[str]:
-        raw = file_path.read_text(encoding="utf-8", errors="replace")
-        urls: list[str] = []
-        for line in raw.splitlines():
-            candidate = line.strip()
-            if not candidate or candidate.startswith("#"):
-                continue
-            if candidate.lower().startswith("rtsp://"):
-                urls.append(normalize_rtsp_url(candidate))
-        deduped: list[str] = []
-        for url in urls:
-            if url not in deduped:
-                deduped.append(url)
-        return deduped
-
-    def _write_batch_summary(self) -> Optional[Path]:
-        if not self.batch_results:
-            return None
-        try:
-            report_dir = Path(self.report_dir_var.get().strip() or str(self.reports_dir))
-            report_dir.mkdir(parents=True, exist_ok=True)
-            batch_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_path = report_dir / f"batch_diagnostic_{batch_stamp}.json"
-            payload = {
-                "app": APP_TITLE,
-                "version": APP_VERSION,
-                "generated_at": datetime.now().isoformat(timespec="seconds"),
-                "total_targets": self.batch_total,
-                "completed_targets": len(self.batch_results),
-                "started_at": self.batch_started_at.isoformat(timespec="seconds") if self.batch_started_at else "",
-                "ended_at": datetime.now().isoformat(timespec="seconds"),
-                "results": self.batch_results,
-            }
-            output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            return output_path
-        except Exception as exc:
-            self.log(f"Failed to write batch summary JSON: {exc}")
-            return None
-
-    def _start_next_batch_item(self) -> None:
-        if not self.batch_running:
-            return
-        if not self.batch_queue:
-            self.batch_running = False
-            self.batch_btn.configure(state=tk.NORMAL)
-            batch_summary = self._write_batch_summary()
-            if batch_summary:
-                self.last_report_var.set(batch_summary.name)
-                self.log(f"Batch summary saved: {batch_summary}")
-                messagebox.showinfo("Batch Completed", f"Batch diagnostics completed.\n\nSummary:\n{batch_summary}")
-            else:
-                messagebox.showinfo("Batch Completed", "Batch diagnostics completed.")
-            return
-
-        next_url = self.batch_queue.pop(0)
-        done = len(self.batch_results)
-        self.status_var.set(f"Batch {done + 1}/{self.batch_total} starting...")
-        self.rtsp_var.set(next_url)
-        self.start_test()
-        if not self.test_running:
-            self.batch_results.append(
-                {
-                    "rtsp_url": next_url,
-                    "status": "start_failed",
-                    "error": "Failed pre-start validation or port checks.",
-                }
-            )
-            self.root.after(150, self._start_next_batch_item)
-
-    def start_batch(self) -> None:
-        if self.test_running or self.batch_running:
-            return
-        batch_file = Path(self.batch_file_var.get().strip()) if self.batch_file_var.get().strip() else None
-        if not batch_file:
-            self.choose_batch_file()
-            batch_file = Path(self.batch_file_var.get().strip()) if self.batch_file_var.get().strip() else None
-        if not batch_file:
-            return
-        if not batch_file.exists():
-            messagebox.showerror("Batch file missing", f"Batch file was not found:\n{batch_file}")
-            return
-        try:
-            urls = self._load_batch_urls(batch_file)
-        except Exception as exc:
-            messagebox.showerror("Batch file error", f"Unable to parse batch file:\n{exc}")
-            return
-        if not urls:
-            messagebox.showerror("Batch file error", "No RTSP URLs were found in the selected batch file.")
-            return
-
-        self.batch_running = True
-        self.batch_queue = urls[:]
-        self.batch_results = []
-        self.batch_total = len(urls)
-        self.batch_started_at = datetime.now()
-        self.batch_btn.configure(state=tk.DISABLED)
-        self.log(f"Batch mode started: {self.batch_total} camera targets loaded from {batch_file.name}.")
-        self._start_next_batch_item()
 
     def open_reports_folder(self) -> None:
         report_dir = Path(self.report_dir_var.get())
@@ -5844,8 +5530,6 @@ class DiagnosticApp:
                     }
                 camera_details = discover_camera_details(rtsp_url, timeout_sec=5)
                 info = apply_camera_details_to_stream_info(info, camera_details)
-                network_details = run_network_path_diagnostics(rtsp_url)
-                info = apply_network_diagnostics_to_stream_info(info, network_details)
                 camera_identity = str(camera_details.get("identity", "N/A") or "N/A")
                 camera_mac = str(camera_details.get("mac_address", "") or "")
                 self.event_queue.put(
@@ -5854,18 +5538,6 @@ class DiagnosticApp:
                         "line": (
                             "Camera details probe: "
                             f"{camera_identity} | MAC={camera_mac or 'N/A'}"
-                        ),
-                    }
-                )
-                self.event_queue.put(
-                    {
-                        "type": "log",
-                        "line": (
-                            "Precheck network: "
-                            f"ping={float(network_details.get('ping_avg_ms', 0.0) or 0.0):.1f} ms, "
-                            f"port554={'open' if bool((network_details.get('port_scan', {}) or {}).get('554', {}).get('open', False)) else 'closed'}, "
-                            f"mtu={int(network_details.get('path_mtu_bytes', 0) or 0) or 'N/A'}, "
-                            f"hops={int(network_details.get('traceroute_hop_count', 0) or 0) or 'N/A'}"
                         ),
                     }
                 )
@@ -5896,10 +5568,6 @@ class DiagnosticApp:
         self.health_var.set("100 (N/A)")
         self.camera_identity_var.set("N/A")
         self.camera_mac_var.set("N/A")
-        self.ping_latency_var.set("N/A")
-        self.port_554_var.set("N/A")
-        self.path_mtu_var.set("N/A")
-        self.traceroute_hops_var.set("N/A")
         self.progress["value"] = 0
         self.bandwidth_chart_points = []
         self.received_chart_points = []
@@ -5945,22 +5613,6 @@ class DiagnosticApp:
         except ValueError:
             messagebox.showerror("Invalid input", "Target FPS must be 0 (auto) or a positive number.")
             return
-
-        conn_meta = parse_rtsp_connection_details(rtsp_url)
-        host = str(conn_meta.get("host", "") or "")
-        rtsp_port = int(conn_meta.get("rtsp_port", 554) or 554)
-        if host:
-            rtsp_open, _rtsp_ms, _rtsp_err = check_tcp_port_open(host, rtsp_port, timeout_sec=1.5)
-            p554_open, _p554_ms, _p554_err = check_tcp_port_open(host, 554, timeout_sec=1.5)
-            if not rtsp_open and not p554_open:
-                messagebox.showerror(
-                    "Port check failed",
-                    (
-                        f"Cannot reach camera TCP ports {rtsp_port} and 554 on host {host}.\n"
-                        "Check firewall/network rules before starting diagnostics."
-                    ),
-                )
-                return
 
         report_dir = Path(self.report_dir_var.get().strip() or str(self.reports_dir))
         try:
@@ -6020,7 +5672,6 @@ class DiagnosticApp:
 
         self.test_running = True
         self.start_btn.configure(state=tk.DISABLED)
-        self.batch_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
         self.log(
             f"Started diagnostic for {duration_seconds} seconds on {shorten_text(rtsp_url)} "
@@ -6032,11 +5683,6 @@ class DiagnosticApp:
             self.status_var.set("Stopping...")
             self.worker.request_stop()
             self.log("Stop requested by user.")
-        if self.batch_running:
-            self.batch_running = False
-            self.batch_queue = []
-            self.batch_btn.configure(state=tk.NORMAL)
-            self.log("Batch mode cancelled by user.")
 
     def _drain_events(self) -> None:
         self._sync_preview_state()
@@ -6106,30 +5752,12 @@ class DiagnosticApp:
             self.stream_counts_var.set(f"{stream_count}/{video_count}/{audio_count}")
             self.camera_identity_var.set(camera_identity)
             self.camera_mac_var.set(camera_mac or "N/A")
-            network = info.get("network_diagnostics", {}) or {}
-            ping_avg = float(network.get("ping_avg_ms", info.get("ping_avg_ms", 0.0)) or 0.0)
-            ping_loss = float(network.get("ping_packet_loss_percent", info.get("ping_packet_loss_percent", 0.0)) or 0.0)
-            path_mtu = int(network.get("path_mtu_bytes", info.get("path_mtu_bytes", 0)) or 0)
-            hop_count = int(network.get("traceroute_hop_count", info.get("traceroute_hop_count", 0)) or 0)
-            port_scan = network.get("port_scan", {}) or {}
-            port_554_open = bool((port_scan.get("554", {}) or {}).get("open", info.get("port_554_open", False)))
-            self.ping_latency_var.set(f"{ping_avg:.1f} ms ({ping_loss:.1f}% loss)" if ping_avg > 0 else "N/A")
-            self.port_554_var.set("Open" if port_554_open else "Closed")
-            self.path_mtu_var.set(str(path_mtu) if path_mtu > 0 else "N/A")
-            self.traceroute_hops_var.set(str(hop_count) if hop_count > 0 else "N/A")
             self.log(
                 "Stream metadata: "
                 f"{stream_text} | transport={selected_transport} ({selected_delivery}) | "
                 f"streams={stream_count} (video={video_count}, audio={audio_count})"
             )
             self.log(f"Camera details: {camera_identity} | MAC={camera_mac or 'N/A'}")
-            if ping_avg > 0 or path_mtu > 0 or hop_count > 0:
-                self.log(
-                    "Network path: "
-                    f"ping={ping_avg:.1f} ms ({ping_loss:.1f}% loss) | "
-                    f"port554={'open' if port_554_open else 'closed'} | "
-                    f"mtu={path_mtu or 'N/A'} | hops={hop_count or 'N/A'}"
-                )
             if audio_count <= 0:
                 self.log("No audio stream detected. This is supported; diagnostics run on video stream only.")
             for item in info.get("streams", []):
@@ -6281,12 +5909,6 @@ class DiagnosticApp:
         self.health_var.set(f"{deep_health.get('score', 'N/A')} ({deep_health.get('grade', 'N/A')})")
         self.camera_identity_var.set(str(summary.get("camera_identity", "N/A") or "N/A"))
         self.camera_mac_var.set(str(summary.get("camera_mac_address", "N/A") or "N/A"))
-        ping_avg = float(summary.get("ping_avg_ms", 0.0) or 0.0)
-        ping_loss = float(summary.get("ping_packet_loss_percent", 0.0) or 0.0)
-        self.ping_latency_var.set(f"{ping_avg:.1f} ms ({ping_loss:.1f}% loss)" if ping_avg > 0 else "N/A")
-        self.port_554_var.set("Open" if bool(summary.get("port_554_open", False)) else "Closed")
-        self.path_mtu_var.set(str(int(summary.get("path_mtu_bytes", 0) or 0)) if int(summary.get("path_mtu_bytes", 0) or 0) > 0 else "N/A")
-        self.traceroute_hops_var.set(str(int(summary.get("traceroute_hop_count", 0) or 0)) if int(summary.get("traceroute_hop_count", 0) or 0) > 0 else "N/A")
         selected_transport = str(transport.get("selected", "N/A")).upper()
         requested_transport = str(transport.get("requested", "N/A")).upper()
         selected_delivery = str(
@@ -6318,33 +5940,11 @@ class DiagnosticApp:
             self.log(f"Snapshot unavailable: {snap.get('error')}")
 
         self.start_btn.configure(state=tk.NORMAL)
-        self.batch_btn.configure(state=tk.NORMAL if not self.batch_running else tk.DISABLED)
         self.stop_btn.configure(state=tk.DISABLED)
         self.test_running = False
         self.worker = None
         if self.preview_started_by_test and self.is_preview_running():
             self.stop_preview()
-
-        if self.batch_running:
-            self.batch_results.append(
-                {
-                    "rtsp_url": str(report_data.get("rtsp_url", "")),
-                    "status": str(report_data.get("status", "unknown")),
-                    "run_id": run_stamp,
-                    "json_report": str(json_path),
-                    "pdf_report": str(pdf_path) if not pdf_error else "",
-                    "error": str(report_data.get("error", "") or ""),
-                    "health_score": int(summary.get("health_score", 0) or 0),
-                    "estimated_dropped_frames": int(summary.get("estimated_dropped_frames", 0) or 0),
-                    "frames_received": int(summary.get("frames_received", 0) or 0),
-                    "camera_identity": str(summary.get("camera_identity", "N/A") or "N/A"),
-                    "camera_mac_address": str(summary.get("camera_mac_address", "") or ""),
-                }
-            )
-            done = len(self.batch_results)
-            self.log(f"Batch progress: {done}/{self.batch_total} cameras completed.")
-            self.root.after(300, self._start_next_batch_item)
-            return
 
         if pdf_error:
             messagebox.showwarning(
