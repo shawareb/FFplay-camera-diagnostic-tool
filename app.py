@@ -143,9 +143,8 @@ def cumulative_to_rate(values: list[float], timeline_sec: list[float]) -> list[f
     """Convert cumulative counters to per-second rates using elapsed-time deltas."""
     if not values:
         return []
-    first_value = max(0.0, float(values[0]))
-    first_dt = float(timeline_sec[0] or 0.0) if timeline_sec else 0.0
-    rates: list[float] = [first_value / first_dt if first_dt > 0 else first_value]
+    # The first point has no previous sample to form a delta; keep it neutral.
+    rates: list[float] = [0.0]
     for idx in range(1, len(values)):
         current = max(0.0, float(values[idx]))
         previous = max(0.0, float(values[idx - 1]))
@@ -158,6 +157,8 @@ def cumulative_to_rate(values: list[float], timeline_sec: list[float]) -> list[f
             delta_t = curr_t - prev_t
         if delta_t <= 0:
             delta_t = 1.0
+        # Guard against tiny burst intervals that create unrealistic visual spikes.
+        delta_t = max(delta_t, 0.25)
 
         rates.append(delta_value / delta_t)
     return rates
@@ -402,13 +403,14 @@ def generate_report_charts_pillow(report_data: dict, charts_dir: Path) -> dict[s
     ]
     plot_indices = select_chart_indices(len(x), 44)
     x_plot = [x[index] for index in plot_indices]
+    wall_elapsed_plot = [wall_elapsed[index] for index in plot_indices]
     frames_plot = [frames[index] for index in plot_indices]
     expected_frames_plot = [expected_frames[index] for index in plot_indices]
     drops_plot = [drops[index] for index in plot_indices]
     drop_rate_plot = [drop_rate[index] for index in plot_indices]
     bandwidth_plot = [bandwidth[index] for index in plot_indices]
-    received_rate_plot = cumulative_to_rate(frames_plot, x_plot)
-    dropped_rate_plot = cumulative_to_rate(drops_plot, x_plot)
+    received_rate_plot = cumulative_to_rate(frames_plot, wall_elapsed_plot)
+    dropped_rate_plot = cumulative_to_rate(drops_plot, wall_elapsed_plot)
 
     title_font = load_chart_font(30, bold=True)
     body_font = load_chart_font(18)
@@ -645,13 +647,14 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
 
         plot_indices = select_chart_indices(len(x), 44)
         x_plot = [x[index] for index in plot_indices]
+        wall_elapsed_plot = [wall_elapsed[index] for index in plot_indices]
         frames_plot = [frames[index] for index in plot_indices]
         expected_frames_plot = [expected_frames[index] for index in plot_indices]
         drops_plot = [drops[index] for index in plot_indices]
         drop_rate_plot = [drop_rate[index] for index in plot_indices]
         bandwidth_plot = [bandwidth[index] for index in plot_indices]
-        received_rate_plot = cumulative_to_rate(frames_plot, x_plot)
-        dropped_rate_plot = cumulative_to_rate(drops_plot, x_plot)
+        received_rate_plot = cumulative_to_rate(frames_plot, wall_elapsed_plot)
+        dropped_rate_plot = cumulative_to_rate(drops_plot, wall_elapsed_plot)
 
         # Combined chart: interval frame bars + live bandwidth line.
         fig1, ax1 = plt.subplots(figsize=(10.8, 5.2), facecolor="#071523")
@@ -3257,6 +3260,27 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
         _report_title: str = APP_TITLE
         _run_id: str = ""
         _total_pages_placeholder: str = "{total_pages}"
+
+        @staticmethod
+        def _sanitize_text(value: Any) -> str:
+            text = str(value) if value is not None else ""
+            text = (
+                text.replace("—", "-")
+                .replace("–", "-")
+                .replace("−", "-")
+                .replace("“", '"')
+                .replace("”", '"')
+                .replace("’", "'")
+                .replace("•", "-")
+                .replace("\u00a0", " ")
+            )
+            return text.encode("latin-1", errors="replace").decode("latin-1")
+
+        def cell(self, w=None, h=None, text="", *args, **kwargs):  # type: ignore[override]
+            return super().cell(w, h, self._sanitize_text(text), *args, **kwargs)
+
+        def multi_cell(self, w, h, text="", *args, **kwargs):  # type: ignore[override]
+            return super().multi_cell(w, h, self._sanitize_text(text), *args, **kwargs)
 
         def footer(self) -> None:
             self.set_y(-11)
