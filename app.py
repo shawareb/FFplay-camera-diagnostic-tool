@@ -261,6 +261,78 @@ def classify_warning(log_line: str) -> str:
     return "other"
 
 
+def explain_warning_line(log_line: str) -> dict[str, str]:
+    lowered = str(log_line or "").lower()
+    category = classify_warning(log_line)
+
+    explanation = ""
+    suggested_action = ""
+
+    if "error constructing the frame rps" in lowered:
+        explanation = (
+            "The HEVC decoder could not rebuild reference-picture metadata for this frame."
+        )
+        suggested_action = (
+            "Usually packet corruption/loss or unstable camera encode output. Prefer RTSP TCP, "
+            "reduce bitrate, and disable smart codecs (H.265+)."
+        )
+    elif "invalid undecodable nalu" in lowered or ("skipping invalid" in lowered and "nalu" in lowered):
+        explanation = (
+            "A video NAL unit was malformed or incomplete, so the frame segment was dropped."
+        )
+        suggested_action = (
+            "Check network stability and MTU, then test with lower bitrate or H.264 to confirm source integrity."
+        )
+    elif "non-existing pps" in lowered or "non-existing sps" in lowered:
+        explanation = (
+            "Decoder received frames before the required parameter sets (SPS/PPS/VPS) were available."
+        )
+        suggested_action = (
+            "Lower GOP interval (more frequent keyframes) and verify camera firmware/encoder stability."
+        )
+    elif "timed out" in lowered or "timeout" in lowered:
+        explanation = "No data/response arrived before the timeout window."
+        suggested_action = (
+            "Check camera reachability, firewall/NAT, and transport mode. TCP is usually safer than UDP."
+        )
+    elif "401 unauthorized" in lowered or "unauthorized" in lowered:
+        explanation = "Authentication failed for stream or control channel."
+        suggested_action = "Verify username/password in the RTSP URL and camera auth mode."
+    elif "404 not found" in lowered:
+        explanation = "The requested RTSP path does not exist on the camera."
+        suggested_action = "Validate stream path/profile on the camera (main/sub stream URL)."
+    elif "connection refused" in lowered:
+        explanation = "Target host rejected TCP connection on the requested port."
+        suggested_action = "Confirm RTSP service is enabled and firewall allows inbound port 554."
+    elif "connection reset" in lowered or "broken pipe" in lowered:
+        explanation = "The camera or an intermediate network device terminated the session unexpectedly."
+        suggested_action = "Check network equipment stability and camera session limits."
+    elif "missed" in lowered and "packet" in lowered:
+        explanation = "Packet loss was detected while receiving the stream."
+        suggested_action = "Use TCP transport and inspect switch/cabling/network congestion."
+    elif category == "decode":
+        explanation = "Decoder reported corrupted or invalid compressed video data."
+        suggested_action = "Check encoder health, firmware, and transport reliability."
+    elif category == "rtsp_protocol":
+        explanation = "RTSP protocol-level warning was emitted."
+        suggested_action = "Verify RTSP URL, credentials, and transport compatibility."
+    elif category == "buffering":
+        explanation = "Buffer overrun/underrun condition indicates unstable packet delivery rate."
+        suggested_action = "Stabilize bandwidth and consider increasing receiver buffering."
+    elif category == "error":
+        explanation = "General runtime error line from toolchain logs."
+        suggested_action = "Review surrounding log lines for root-cause context."
+    else:
+        explanation = "Generic warning line captured during diagnostics."
+        suggested_action = "Review repeated patterns and correlate with drops/jitter spikes."
+
+    return {
+        "category": category,
+        "explanation": explanation,
+        "suggested_action": suggested_action,
+    }
+
+
 def extract_missed_packets(log_line: str) -> int:
     match = re.search(r"missed\s+(\d+)\s+packets?", log_line.lower())
     if not match:
@@ -3650,6 +3722,13 @@ class DiagnosticWorker(threading.Thread):
             "timeline": self.timeline_samples,
             "warning_count": self.warning_count,
             "warning_samples": self.warning_samples,
+            "warning_samples_detailed": [
+                {
+                    "line": line,
+                    **explain_warning_line(line),
+                }
+                for line in self.warning_samples
+            ],
         }
 
 
@@ -4634,23 +4713,43 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
             horizontal_rule()
 
     warning_samples = report_data.get("warning_samples", [])
+    warning_samples_detailed = report_data.get("warning_samples_detailed", [])
     if warning_samples:
         pdf.add_page()
-        section_header("Warning Samples", "Raw warning/error log lines captured during the run")
+        section_header("Warning Samples", "Warning lines with per-item explanation and suggested action")
         pdf.set_font("Helvetica", "I", 8)
         pdf.set_text_color(120, 130, 145)
         pdf.multi_cell(
             0, 4.5,
-            "These are the first warnings logged during the run. Use them to diagnose camera, "
-            "codec, or network-level errors.",
+            "Each warning includes a category, plain-language meaning, and recommended next step.",
             new_x=XPos.LMARGIN, new_y=YPos.NEXT,
         )
         pdf.set_text_color(0, 0, 0)
         pdf.ln(1)
-        pdf.set_font("Helvetica", "", 8)
+        page_bottom_guard = pdf.h - pdf.b_margin - 16
         for idx, warning_line in enumerate(warning_samples, start=1):
+            if idx - 1 < len(warning_samples_detailed):
+                details = warning_samples_detailed[idx - 1] or {}
+            else:
+                details = explain_warning_line(str(warning_line or ""))
+
+            category_label = str(details.get("category", "other") or "other").replace("_", " ").title()
+            explanation = str(details.get("explanation", "") or "")
+            action = str(details.get("suggested_action", "") or "")
+
+            if pdf.get_y() > page_bottom_guard:
+                pdf.add_page()
+                section_header("Warning Samples (Continued)")
+
             pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(0, 5, f"{idx}.  {warning_line}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_font("Helvetica", "B", 8.5)
+            pdf.multi_cell(0, 5.2, f"{idx}. {warning_line}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_font("Helvetica", "", 8)
+            pdf.multi_cell(0, 4.3, f"Category: {category_label}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.multi_cell(0, 4.3, f"Meaning: {explanation}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.multi_cell(0, 4.3, f"Action: {action}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.ln(0.8)
+            horizontal_rule(222, 228, 236)
 
     pdf.output(str(report_path))
 
