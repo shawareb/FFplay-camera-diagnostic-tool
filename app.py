@@ -1147,6 +1147,8 @@ def detect_ff_binary(binary_name: str) -> Optional[str]:
     preferred_candidates = [
         base_dir / exe_name,
         base_dir / "ffmpeg" / "bin" / exe_name,
+        Path("C:/ffmeg") / exe_name,
+        Path("C:/ffmeg/bin") / exe_name,
         Path("C:/ffmpeg") / exe_name,
         Path("C:/FFMPEG") / exe_name,
         Path("C:/FFMPEG/bin") / exe_name,
@@ -1158,7 +1160,7 @@ def detect_ff_binary(binary_name: str) -> Optional[str]:
         if candidate.exists():
             return str(candidate)
 
-    for root in (Path("C:/ffmpeg"), Path("C:/FFMPEG")):
+    for root in (Path("C:/ffmeg"), Path("C:/ffmpeg"), Path("C:/FFMPEG")):
         found = find_binary_in_root(root, exe_name)
         if found:
             return found
@@ -1264,6 +1266,31 @@ def simplify_codec_name(value: str) -> str:
     return aliases.get(token, token.replace(" ", "_") or "unknown")
 
 
+def format_codec_display(codec_name: str, profile: str = "", extra_hint: str = "") -> str:
+    base = simplify_codec_name(codec_name)
+    profile_l = (profile or "").strip().lower()
+    hint_l = (extra_hint or "").strip().lower()
+    combined = f"{profile_l} {hint_l}".strip()
+
+    if base == "hevc":
+        label = "H.265"
+        if "h265+" in combined or "hevc+" in combined or "h.265+" in combined or "plus" in combined:
+            label = "H.265+"
+    elif base == "h264":
+        label = "H.264"
+        if "h264+" in combined or "avc+" in combined or "h.264+" in combined or "plus" in combined:
+            label = "H.264+"
+    elif base == "mpeg4":
+        label = "MPEG-4"
+    else:
+        label = codec_name or base.upper()
+
+    profile_text = (profile or "").strip()
+    if profile_text and "plus" not in profile_l:
+        return f"{label} ({profile_text})"
+    return label
+
+
 def extract_gst_int(text: str, key: str) -> int:
     match = re.search(rf"{re.escape(key)}\\*=\s*\\*\((?:int|uint|guint64)\\*\)(-?\d+)", text)
     if not match:
@@ -1366,7 +1393,11 @@ def parse_gst_discoverer_output(
                 "index": index,
                 "codec_type": codec_type,
                 "codec_name": simplify_codec_name(caps_text.split(",", 1)[0]),
-                "codec_display": codec_tags.get(codec_type, "").strip() or caps_text.split(",", 1)[0].strip(),
+                "codec_display": format_codec_display(
+                    caps_text.split(",", 1)[0].strip(),
+                    "",
+                    codec_tags.get(codec_type, "").strip() or caps_text,
+                ),
                 "profile": "",
                 "width": extract_gst_int(caps_text, "width"),
                 "height": extract_gst_int(caps_text, "height"),
@@ -1417,14 +1448,22 @@ def parse_gst_discoverer_output(
             elif stripped.startswith("Codec:"):
                 codec_blob = stripped.split(":", 1)[1].strip()
                 current_stream["codec_name"] = simplify_codec_name(codec_blob.split(",", 1)[0])
-                current_stream["codec_display"] = codec_tags.get(current_stream["codec_type"], "").strip() or codec_blob
+                current_stream["codec_display"] = format_codec_display(
+                    current_stream.get("codec_name", ""),
+                    str(current_stream.get("profile", "") or ""),
+                    codec_tags.get(current_stream["codec_type"], "").strip() or codec_blob,
+                )
 
     if current_stream:
         streams.append(current_stream)
 
     for item in streams:
         codec_type = str(item.get("codec_type", "unknown"))
-        item["codec_display"] = codec_tags.get(codec_type, "").strip() or str(item.get("codec_display", ""))
+        item["codec_display"] = format_codec_display(
+            str(item.get("codec_name", "unknown") or "unknown"),
+            str(item.get("profile", "") or ""),
+            codec_tags.get(codec_type, "").strip() or str(item.get("codec_display", "")),
+        )
 
     video_streams = [item for item in streams if item.get("codec_type") == "video"]
     audio_streams = [item for item in streams if item.get("codec_type") == "audio"]
@@ -1455,7 +1494,14 @@ def parse_gst_discoverer_output(
         "format_bit_rate_kbps": 0.0,
         "streams": streams,
         "codec_name": primary_video.get("codec_name", "unknown"),
-        "codec_display": primary_video.get("codec_display", ""),
+        "codec_display": primary_video.get(
+            "codec_display",
+            format_codec_display(
+                str(primary_video.get("codec_name", "unknown") or "unknown"),
+                str(primary_video.get("profile", "") or ""),
+            ),
+        ),
+        "profile": primary_video.get("profile", ""),
         "width": primary_video.get("width", 0),
         "height": primary_video.get("height", 0),
         "pix_fmt": primary_video.get("pix_fmt", "unknown"),
@@ -1570,7 +1616,8 @@ def probe_stream_gstreamer(
         "format_bit_rate_kbps": 0.0,
         "streams": [],
         "codec_name": "unknown",
-        "codec_display": "",
+        "codec_display": "Unknown",
+        "profile": "",
         "width": 0,
         "height": 0,
         "pix_fmt": "unknown",
@@ -1678,8 +1725,8 @@ def run_ffprobe_stream_query(
         "-show_format",
         "-show_entries",
         (
-            "stream=index,codec_type,codec_name,profile,width,height,pix_fmt,"
-            "avg_frame_rate,r_frame_rate,bit_rate,sample_rate,channels,channel_layout"
+            "stream=index,codec_type,codec_name,codec_long_name,codec_tag_string,profile,width,height,pix_fmt,"
+            "avg_frame_rate,r_frame_rate,bit_rate,sample_rate,channels,channel_layout:stream_tags=title,comment,handler_name,encoder"
         ),
         "-show_entries",
         "format=bit_rate",
@@ -1773,11 +1820,23 @@ def probe_stream(ffprobe_path: str, rtsp_url: str, requested_transport: str = "a
         real_rate = str(raw.get("r_frame_rate", "0/0") or "0/0")
         fps = parse_frame_rate(avg_rate) or parse_frame_rate(real_rate)
         bit_rate_bps = parse_int_token(str(raw.get("bit_rate", "0")))
+        raw_tags = raw.get("tags", {}) or {}
+        codec_hint = " ".join(
+            str(raw_tags.get(key, "") or "")
+            for key in ("title", "comment", "handler_name", "encoder")
+        ).strip()
         stream_item = {
             "index": int(raw.get("index", 0) or 0),
             "codec_type": codec_type,
             "codec_name": str(raw.get("codec_name", "unknown") or "unknown"),
             "profile": str(raw.get("profile", "") or ""),
+            "codec_display": format_codec_display(
+                str(raw.get("codec_name", "unknown") or "unknown"),
+                str(raw.get("profile", "") or ""),
+                f"{str(raw.get('codec_tag_string', '') or '')} {codec_hint}",
+            ),
+            "codec_tag_string": str(raw.get("codec_tag_string", "") or ""),
+            "codec_long_name": str(raw.get("codec_long_name", "") or ""),
             "width": int(raw.get("width", 0) or 0),
             "height": int(raw.get("height", 0) or 0),
             "pix_fmt": str(raw.get("pix_fmt", "unknown") or "unknown"),
@@ -1819,6 +1878,14 @@ def probe_stream(ffprobe_path: str, rtsp_url: str, requested_transport: str = "a
         "format_bit_rate_kbps": round(format_bit_rate_bps / 1000.0, 3) if format_bit_rate_bps > 0 else 0.0,
         "streams": streams,
         "codec_name": primary_video.get("codec_name", "unknown"),
+        "codec_display": primary_video.get(
+            "codec_display",
+            format_codec_display(
+                str(primary_video.get("codec_name", "unknown") or "unknown"),
+                str(primary_video.get("profile", "") or ""),
+            ),
+        ),
+        "profile": primary_video.get("profile", ""),
         "width": primary_video.get("width", 0),
         "height": primary_video.get("height", 0),
         "pix_fmt": primary_video.get("pix_fmt", "unknown"),
@@ -2009,6 +2076,8 @@ class DiagnosticWorker(threading.Thread):
             "format_bit_rate_kbps": 0.0,
             "streams": [],
             "codec_name": "unknown",
+            "codec_display": "Unknown",
+            "profile": "",
             "width": 0,
             "height": 0,
             "pix_fmt": "unknown",
@@ -2976,6 +3045,18 @@ class DiagnosticWorker(threading.Thread):
             "stream_info": self.stream_info,
             "summary": {
                 "stream_nominal_fps": stream_fps,
+                "stream_codec_name": str(self.stream_info.get("codec_name", "") or ""),
+                "stream_codec_display": str(
+                    self.stream_info.get(
+                        "codec_display",
+                        format_codec_display(
+                            str(self.stream_info.get("codec_name", "unknown") or "unknown"),
+                            str(self.stream_info.get("profile", "") or ""),
+                        ),
+                    )
+                ),
+                "stream_profile": str(self.stream_info.get("profile", "") or ""),
+                "stream_bit_rate_kbps": round(float(self.stream_info.get("bit_rate_kbps", 0.0) or 0.0), 3),
                 "frames_received": frames_received,
                 "expected_frames": expected_frames,
                 "estimated_dropped_frames": estimated_drops,
@@ -3585,8 +3666,21 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
          "Algorithm used to estimate frame drops."),
         (
             "Codec / Resolution",
-            f"{stream.get('codec_name', 'N/A')} / {stream.get('width', 0)}x{stream.get('height', 0)}",
-            "Video codec and resolution reported by the stream.",
+            (
+                f"{stream.get('codec_display', stream.get('codec_name', 'N/A'))} / "
+                f"{stream.get('width', 0)}x{stream.get('height', 0)}"
+            ),
+            "Video codec variant/profile and resolution reported by the stream.",
+        ),
+        (
+            "Stream Bitrate (metadata kbps)",
+            str(
+                stream.get(
+                    "bit_rate_kbps",
+                    summary.get("stream_bit_rate_kbps", "N/A"),
+                )
+            ),
+            "Bitrate declared by metadata (different from measured live bandwidth).",
         ),
         (
             "RTSP Transport (req / selected)",
@@ -3888,7 +3982,15 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
         for stream_item in stream_inventory:
             idx = int(stream_item.get("index", 0) or 0)
             ctype = str(stream_item.get("codec_type", "unknown") or "unknown")
-            codec = str(stream_item.get("codec_name", "unknown") or "unknown")
+            codec = str(
+                stream_item.get(
+                    "codec_display",
+                    format_codec_display(
+                        str(stream_item.get("codec_name", "unknown") or "unknown"),
+                        str(stream_item.get("profile", "") or ""),
+                    ),
+                )
+            )
             bitrate = float(stream_item.get("bit_rate_kbps", 0.0) or 0.0)
             line = f"#{idx}  [{ctype.upper()}]  {codec.upper()}"
             if ctype == "video":
@@ -4873,6 +4975,8 @@ class DiagnosticApp:
                         "format_bit_rate_kbps": 0.0,
                         "streams": [],
                         "codec_name": "unknown (ffprobe missing)",
+                        "codec_display": "Unknown (ffprobe missing)",
+                        "profile": "",
                         "width": 0,
                         "height": 0,
                         "pix_fmt": "unknown",
@@ -4900,6 +5004,8 @@ class DiagnosticApp:
                         "format_bit_rate_kbps": 0.0,
                         "streams": [],
                         "codec_name": "unknown (metadata tool missing)",
+                        "codec_display": "Unknown (metadata tool missing)",
+                        "profile": "",
                         "width": 0,
                         "height": 0,
                         "pix_fmt": "unknown",
@@ -5075,11 +5181,23 @@ class DiagnosticApp:
             stream_count = int(info.get("stream_count", 0) or 0)
             video_count = int(info.get("video_stream_count", 0) or 0)
             audio_count = int(info.get("audio_stream_count", 0) or 0)
+            codec_label = str(
+                info.get(
+                    "codec_display",
+                    format_codec_display(
+                        str(info.get("codec_name", "unknown") or "unknown"),
+                        str(info.get("profile", "") or ""),
+                    ),
+                )
+            )
+            stream_bitrate = float(info.get("bit_rate_kbps", 0.0) or 0.0)
             stream_text = (
-                f"{info.get('codec_name', 'unknown')} | "
+                f"{codec_label} | "
                 f"{info.get('width', 0)}x{info.get('height', 0)} | "
                 f"{info.get('fps', 0)} FPS"
             )
+            if stream_bitrate > 0:
+                stream_text += f" | {stream_bitrate:.1f} kbps"
             self.stream_var.set(stream_text)
             self.transport_live_var.set(
                 f"{selected_transport}/{selected_delivery} (Req: {requested_transport}/{requested_delivery})"
@@ -5095,7 +5213,13 @@ class DiagnosticApp:
             for item in info.get("streams", []):
                 idx = item.get("index", 0)
                 ctype = item.get("codec_type", "unknown")
-                codec = item.get("codec_name", "unknown")
+                codec = item.get(
+                    "codec_display",
+                    format_codec_display(
+                        str(item.get("codec_name", "unknown") or "unknown"),
+                        str(item.get("profile", "") or ""),
+                    ),
+                )
                 if ctype == "video":
                     extra = (
                         f"{item.get('width', 0)}x{item.get('height', 0)} @ "
@@ -5107,7 +5231,9 @@ class DiagnosticApp:
                     )
                 else:
                     extra = "metadata stream"
-                self.log(f"  Stream #{idx} [{ctype}] {codec} | {extra}")
+                stream_bitrate = float(item.get("bit_rate_kbps", 0.0) or 0.0)
+                bitrate_suffix = f" | {stream_bitrate:.1f} kbps" if stream_bitrate > 0 else ""
+                self.log(f"  Stream #{idx} [{ctype}] {codec} | {extra}{bitrate_suffix}")
             return
 
         if event_type == "progress":
