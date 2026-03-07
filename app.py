@@ -139,6 +139,30 @@ def cumulative_to_interval(values: list[float]) -> list[float]:
     return intervals
 
 
+def cumulative_to_rate(values: list[float], timeline_sec: list[float]) -> list[float]:
+    """Convert cumulative counters to per-second rates using elapsed-time deltas."""
+    if not values:
+        return []
+    first_value = max(0.0, float(values[0]))
+    first_dt = float(timeline_sec[0] or 0.0) if timeline_sec else 0.0
+    rates: list[float] = [first_value / first_dt if first_dt > 0 else first_value]
+    for idx in range(1, len(values)):
+        current = max(0.0, float(values[idx]))
+        previous = max(0.0, float(values[idx - 1]))
+        delta_value = max(0.0, current - previous)
+
+        delta_t = 0.0
+        if idx < len(timeline_sec):
+            curr_t = float(timeline_sec[idx] or 0.0)
+            prev_t = float(timeline_sec[idx - 1] or 0.0)
+            delta_t = curr_t - prev_t
+        if delta_t <= 0:
+            delta_t = 1.0
+
+        rates.append(delta_value / delta_t)
+    return rates
+
+
 def parse_float_token(value: str) -> Optional[float]:
     if not value:
         return None
@@ -383,8 +407,8 @@ def generate_report_charts_pillow(report_data: dict, charts_dir: Path) -> dict[s
     drops_plot = [drops[index] for index in plot_indices]
     drop_rate_plot = [drop_rate[index] for index in plot_indices]
     bandwidth_plot = [bandwidth[index] for index in plot_indices]
-    received_interval_plot = cumulative_to_interval(frames_plot)
-    dropped_interval_plot = cumulative_to_interval(drops_plot)
+    received_rate_plot = cumulative_to_rate(frames_plot, x_plot)
+    dropped_rate_plot = cumulative_to_rate(drops_plot, x_plot)
 
     title_font = load_chart_font(30, bold=True)
     body_font = load_chart_font(18)
@@ -444,12 +468,12 @@ def generate_report_charts_pillow(report_data: dict, charts_dir: Path) -> dict[s
     rect = plot_rect(dark=True, legend=True)
     draw_grid(draw, rect, dark=True)
     x_pos = x_positions(rect, x_plot)
-    frame_axis_max = nice_axis_max(max(received_interval_plot + dropped_interval_plot + [1.0]))
+    frame_axis_max = nice_axis_max(max(received_rate_plot + dropped_rate_plot + [1.0]))
     bw_axis_max = nice_axis_max(max(bandwidth_plot + [1.0]))
     bar_width = max(10, int((rect[2] - rect[0]) / max(24, len(x_pos) * 2)))
     for idx, xpos in enumerate(x_pos):
-        rx_y = y_position(rect, received_interval_plot[idx], frame_axis_max)
-        drop_y = y_position(rect, dropped_interval_plot[idx], frame_axis_max)
+        rx_y = y_position(rect, received_rate_plot[idx], frame_axis_max)
+        drop_y = y_position(rect, dropped_rate_plot[idx], frame_axis_max)
         draw.rectangle((xpos - bar_width, rx_y, xpos - 2, rect[3]), fill="#80ED99")
         draw.rectangle((xpos + 2, drop_y, xpos + bar_width, rect[3]), fill="#F94144")
     bw_points = [(xpos, y_position(rect, bandwidth_plot[idx], bw_axis_max)) for idx, xpos in enumerate(x_pos)]
@@ -462,8 +486,8 @@ def generate_report_charts_pillow(report_data: dict, charts_dir: Path) -> dict[s
     draw_text(draw, (rect[2] + 8, rect[3]), "0 kbps", fill="#E0E1DD", font=small_font, anchor="ls")
     legend_x = 1310
     legend_items = [
-        ("#80ED99", "Frames Received"),
-        ("#F94144", "Dropped Frames"),
+        ("#80ED99", "Frames/sec"),
+        ("#F94144", "Drops/sec"),
         ("#4CC9F0", "Bandwidth"),
     ]
     draw_text(draw, (legend_x, 120), "Key", fill="#E0E1DD", font=body_font)
@@ -513,13 +537,13 @@ def generate_report_charts_pillow(report_data: dict, charts_dir: Path) -> dict[s
     draw_simple_line(draw, drop_points, "#E63946", width=3)
     draw_text(draw, (rect_top[0], rect_top[1] - 24), "Cumulative Drops", fill="#102235", font=small_font)
     x_pos = x_positions(rect_bottom, x_plot)
-    drop_rate_max = nice_axis_max(max(drop_rate_plot + dropped_interval_plot + [1.0]))
+    drop_rate_max = nice_axis_max(max(drop_rate_plot + dropped_rate_plot + [1.0]))
     for idx, xpos in enumerate(x_pos):
-        top_y = y_position(rect_bottom, dropped_interval_plot[idx], drop_rate_max)
+        top_y = y_position(rect_bottom, dropped_rate_plot[idx], drop_rate_max)
         draw.rectangle((xpos - 8, top_y, xpos + 8, rect_bottom[3]), fill="#F94144")
     drop_rate_points = [(xpos, y_position(rect_bottom, drop_rate_plot[idx], drop_rate_max)) for idx, xpos in enumerate(x_pos)]
     draw_simple_line(draw, drop_rate_points, "#6D597A", width=3)
-    draw_text(draw, (rect_bottom[0], rect_bottom[1] - 24), "Drops/Sample + Drop Rate %", fill="#102235", font=small_font)
+    draw_text(draw, (rect_bottom[0], rect_bottom[1] - 24), "Drops/sec + Drop Rate %", fill="#102235", font=small_font)
     save_chart(img, "drop_timeline.png")
 
     if any(value > 0 for value in bandwidth):
@@ -626,8 +650,8 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         drops_plot = [drops[index] for index in plot_indices]
         drop_rate_plot = [drop_rate[index] for index in plot_indices]
         bandwidth_plot = [bandwidth[index] for index in plot_indices]
-        received_interval_plot = cumulative_to_interval(frames_plot)
-        dropped_interval_plot = cumulative_to_interval(drops_plot)
+        received_rate_plot = cumulative_to_rate(frames_plot, x_plot)
+        dropped_rate_plot = cumulative_to_rate(drops_plot, x_plot)
 
         # Combined chart: interval frame bars + live bandwidth line.
         fig1, ax1 = plt.subplots(figsize=(10.8, 5.2), facecolor="#071523")
@@ -641,21 +665,21 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
 
         received_bars = ax1.bar(
             [value - (bar_width * 0.52) for value in x_plot],
-            received_interval_plot,
+            received_rate_plot,
             width=bar_width,
             color="#80ED99",
             alpha=0.88,
-            label="Frames Received",
+            label="Frames/sec",
         )
         dropped_bars = ax1.bar(
             [value + (bar_width * 0.52) for value in x_plot],
-            dropped_interval_plot,
+            dropped_rate_plot,
             width=bar_width,
             color="#F94144",
             alpha=0.82,
-            label="Dropped Frames",
+            label="Drops/sec",
         )
-        avg_received = safe_mean([v for v in received_interval_plot if v > 0])
+        avg_received = safe_mean([v for v in received_rate_plot if v > 0])
         if avg_received > 0:
             ax1.axhline(avg_received, color="#80ED99", linewidth=1.0, linestyle=":", alpha=0.55)
             ax1.text(
@@ -669,7 +693,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
             )
         ax1.set_title("Live Dashboard  â€”  Frames Received vs Dropped + Bandwidth", color="#F8FAFC", fontsize=11, pad=6)
         ax1.set_xlabel("Elapsed Time (sec)", color="#E0E1DD")
-        ax1.set_ylabel("Frames per Sample Interval", color="#E0E1DD")
+        ax1.set_ylabel("Frames per Second", color="#E0E1DD")
         ax1.grid(True, axis="y", alpha=0.20, color="#37506B")
         ax1.tick_params(colors="#E0E1DD")
         for spine in ax1.spines.values():
@@ -694,7 +718,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
             spine.set_color("#37506B")
         ax1.legend(
             [received_bars, dropped_bars, bandwidth_line],
-            ["Frames Received", "Dropped Frames", "Bandwidth (kbps)"],
+            ["Frames/sec", "Drops/sec", "Bandwidth (kbps)"],
             loc="center left",
             bbox_to_anchor=(1.08, 0.5),
             fontsize=8,
@@ -709,7 +733,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
             legend.get_title().set_color("#E0E1DD")
         fig1.text(
             0.5, 0.01,
-            "Green bars = frames captured each interval  |  Red bars = frames dropped  |  Blue line = network bandwidth",
+            "Green bars = capture FPS  |  Red bars = drop FPS  |  Blue line = network bandwidth",
             ha="center", fontsize=7, color="#A9BCD0",
         )
         frames_chart = charts_dir / "timeline_frames.png"
@@ -797,7 +821,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         ax_drop_top.set_ylabel("Cumulative Drops")
         ax_drop_top.set_title(f"Drop Timeline  â€”  Total dropped: {final_drops:.0f} frames", pad=6)
         ax_drop_top.grid(True, alpha=0.25)
-        ax_drop_bottom.bar(x_plot, dropped_interval_plot, color="#F94144", alpha=0.75, label="Drops / Interval")
+        ax_drop_bottom.bar(x_plot, dropped_rate_plot, color="#F94144", alpha=0.75, label="Drops / sec")
         ax_drop_bottom.plot(
             x_plot, drop_rate_plot, color="#6D597A", linewidth=1.8,
             marker="o", markersize=3.0, label="Drop Rate %",
@@ -812,7 +836,7 @@ def generate_report_charts(report_data: dict, charts_dir: Path) -> dict[str, str
         ax_drop_bottom.legend(loc="upper right", fontsize=8)
         fig_drop.text(
             0.5, 0.01,
-            "Top panel: cumulative drops over time  |  Bottom: drops per sample + instantaneous drop rate %",
+            "Top panel: cumulative drops over time  |  Bottom: drops per second + instantaneous drop rate %",
             ha="center", fontsize=7.5, color="#555",
         )
         drop_chart = charts_dir / "drop_timeline.png"
@@ -3643,7 +3667,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
                 "Live Dashboard Graph",
                 "timeline_frames",
                 78,
-                subtitle="Green = frames captured per interval, Red = frames dropped, Blue line = bandwidth (kbps)",
+                subtitle="Green = capture FPS, Red = drop FPS, Blue line = bandwidth (kbps)",
             )
             place_chart(
                 "Expected vs Received Frames",
@@ -3661,7 +3685,7 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
                 "Drop Timeline",
                 "drop_timeline",
                 80,
-                subtitle="Top panel: cumulative drops;  Bottom panel: drops per sample interval + instantaneous drop rate %",
+                subtitle="Top panel: cumulative drops;  Bottom panel: drops per second + instantaneous drop rate %",
             )
 
             if any(chart_paths.get(key) for key in ("bandwidth_distribution", "media_vs_wall", "frame_distribution", "warning_categories")):
