@@ -33,17 +33,23 @@ import os
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
+import base64
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
 from statistics import mean, pstdev
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
+import xml.etree.ElementTree as ET
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -1063,6 +1069,304 @@ def normalize_rtsp_url(rtsp_url: str) -> str:
     return urlunsplit((parsed.scheme, safe_netloc, parsed.path, parsed.query, parsed.fragment))
 
 
+def parse_rtsp_connection_details(rtsp_url: str) -> dict[str, Any]:
+    try:
+        parsed = urlsplit(rtsp_url)
+    except Exception:
+        return {
+            "host": "",
+            "rtsp_port": 0,
+            "username": "",
+            "password": "",
+        }
+    return {
+        "host": str(parsed.hostname or ""),
+        "rtsp_port": int(parsed.port or 554),
+        "username": unquote(str(parsed.username or "")),
+        "password": unquote(str(parsed.password or "")),
+    }
+
+
+def empty_camera_details(*, host: str = "", rtsp_port: int = 0, username: str = "") -> dict[str, Any]:
+    return {
+        "host": host,
+        "ip_address": "",
+        "rtsp_port": rtsp_port,
+        "username": username,
+        "mac_address": "",
+        "manufacturer": "",
+        "model": "",
+        "firmware_version": "",
+        "serial_number": "",
+        "hardware_id": "",
+        "onvif_endpoint": "",
+        "onvif_reachable": False,
+        "identity": "N/A",
+        "discovery_methods": [],
+        "discovery_errors": [],
+    }
+
+
+def _xml_escape(text: str) -> str:
+    return (
+        str(text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def _find_xml_text_by_local_name(root: ET.Element, local_name: str) -> str:
+    needle = local_name.strip().lower()
+    if not needle:
+        return ""
+    for elem in root.iter():
+        tag = str(elem.tag or "")
+        if "}" in tag:
+            tag = tag.rsplit("}", 1)[-1]
+        if tag.lower() == needle:
+            text = str(elem.text or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _onvif_get_device_information_envelope(username: str, password: str) -> str:
+    created = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    if username and password:
+        nonce_bytes = os.urandom(16)
+        nonce_b64 = base64.b64encode(nonce_bytes).decode("ascii")
+        digest = hashlib.sha1(nonce_bytes + created.encode("utf-8") + password.encode("utf-8")).digest()
+        digest_b64 = base64.b64encode(digest).decode("ascii")
+        security_header = f"""
+    <wsse:Security soap:mustUnderstand="true">
+      <wsse:UsernameToken>
+        <wsse:Username>{_xml_escape(username)}</wsse:Username>
+        <wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{digest_b64}</wsse:Password>
+        <wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">{nonce_b64}</wsse:Nonce>
+        <wsu:Created>{created}</wsu:Created>
+      </wsse:UsernameToken>
+    </wsse:Security>"""
+    else:
+        security_header = ""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope
+  xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+  xmlns:tds="http://www.onvif.org/ver10/device/wsdl"
+  xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
+  xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
+  <soap:Header>{security_header}
+  </soap:Header>
+  <soap:Body>
+    <tds:GetDeviceInformation/>
+  </soap:Body>
+</soap:Envelope>"""
+
+
+def query_onvif_device_information(
+    *,
+    host: str,
+    username: str,
+    password: str,
+    timeout_sec: int = 5,
+) -> tuple[dict[str, Any], str]:
+    if not host:
+        return {}, "Host not found in RTSP URL."
+
+    host_for_url = host
+    if ":" in host_for_url and not host_for_url.startswith("["):
+        host_for_url = f"[{host_for_url}]"
+
+    endpoint_candidates: list[str] = []
+    common_paths = ("/onvif/device_service", "/onvif/deviceservice")
+    common_ports = (80, 8899, 8000, 8080)
+    for path in common_paths:
+        endpoint_candidates.append(f"http://{host_for_url}{path}")
+    for port in common_ports:
+        for path in common_paths:
+            endpoint_candidates.append(f"http://{host_for_url}:{port}{path}")
+
+    deduped: list[str] = []
+    for endpoint in endpoint_candidates:
+        if endpoint not in deduped:
+            deduped.append(endpoint)
+
+    envelope = _onvif_get_device_information_envelope(username=username, password=password)
+    payload = envelope.encode("utf-8")
+    last_error = "ONVIF request failed."
+
+    for endpoint in deduped:
+        response_text = ""
+        request = urllib.request.Request(
+            endpoint,
+            data=payload,
+            method="POST",
+            headers={
+                "Content-Type": 'application/soap+xml; charset="utf-8"',
+                "Accept": "application/soap+xml, text/xml, application/xml",
+                "User-Agent": f"{APP_TITLE}/{APP_VERSION}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=max(2, timeout_sec)) as response:
+                response_text = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            body = b""
+            try:
+                body = exc.read()
+            except Exception:
+                body = b""
+            response_text = body.decode("utf-8", errors="replace")
+            if not response_text:
+                last_error = f"{endpoint} returned HTTP {exc.code}."
+                continue
+        except Exception as exc:
+            last_error = f"{endpoint} failed: {exc}"
+            continue
+
+        try:
+            root = ET.fromstring(response_text)
+        except Exception as exc:
+            last_error = f"{endpoint} returned invalid XML: {exc}"
+            continue
+
+        manufacturer = _find_xml_text_by_local_name(root, "Manufacturer")
+        model = _find_xml_text_by_local_name(root, "Model")
+        firmware_version = _find_xml_text_by_local_name(root, "FirmwareVersion")
+        serial_number = _find_xml_text_by_local_name(root, "SerialNumber")
+        hardware_id = _find_xml_text_by_local_name(root, "HardwareId")
+
+        if any((manufacturer, model, firmware_version, serial_number, hardware_id)):
+            return (
+                {
+                    "manufacturer": manufacturer,
+                    "model": model,
+                    "firmware_version": firmware_version,
+                    "serial_number": serial_number,
+                    "hardware_id": hardware_id,
+                    "onvif_endpoint": endpoint,
+                    "onvif_reachable": True,
+                },
+                "",
+            )
+
+        fault_reason = _find_xml_text_by_local_name(root, "Text") or _find_xml_text_by_local_name(root, "Reason")
+        if fault_reason:
+            last_error = f"{endpoint} responded with ONVIF fault: {fault_reason}"
+        else:
+            last_error = f"{endpoint} responded without device information fields."
+
+    return {}, last_error
+
+
+def resolve_host_mac_address(host: str, *, timeout_sec: int = 2) -> tuple[str, str, str]:
+    if not host:
+        return "", "", "Host missing."
+
+    ip_address = ""
+    mac_address = ""
+    error = ""
+    try:
+        ip_address = socket.gethostbyname(host)
+    except Exception as exc:
+        return "", "", f"Failed to resolve host '{host}': {exc}"
+
+    try:
+        subprocess.run(
+            ["ping", "-n", "1", "-w", str(int(max(200, timeout_sec * 1000))), ip_address],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        # Ping warm-up failure should not stop ARP lookup.
+        pass
+
+    try:
+        arp_result = subprocess.run(
+            ["arp", "-a", ip_address],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_subprocess_kwargs(),
+        )
+        arp_text = "\n".join(part for part in (arp_result.stdout, arp_result.stderr) if part)
+    except Exception as exc:
+        return ip_address, "", f"ARP lookup failed: {exc}"
+
+    mac_match = re.search(r"([0-9A-Fa-f]{2}(?:[:-])){5}[0-9A-Fa-f]{2}", arp_text or "")
+    if mac_match:
+        mac_address = mac_match.group(0).replace(":", "-").upper()
+    else:
+        error = f"No MAC entry found in ARP cache for {ip_address}."
+
+    return ip_address, mac_address, error
+
+
+def discover_camera_details(rtsp_url: str, *, timeout_sec: int = 5) -> dict[str, Any]:
+    details = parse_rtsp_connection_details(rtsp_url)
+    host = str(details.get("host", "") or "")
+    rtsp_port = int(details.get("rtsp_port", 0) or 0)
+    username = str(details.get("username", "") or "")
+    password = str(details.get("password", "") or "")
+
+    camera = empty_camera_details(host=host, rtsp_port=rtsp_port, username=username)
+    if not host:
+        camera["discovery_errors"].append("RTSP host missing.")
+        return camera
+
+    ip_address, mac_address, mac_err = resolve_host_mac_address(host, timeout_sec=timeout_sec)
+    if ip_address:
+        camera["ip_address"] = ip_address
+        camera["discovery_methods"].append("dns+arp")
+    if mac_address:
+        camera["mac_address"] = mac_address
+    elif mac_err:
+        camera["discovery_errors"].append(mac_err)
+
+    onvif_data, onvif_error = query_onvif_device_information(
+        host=host,
+        username=username,
+        password=password,
+        timeout_sec=timeout_sec,
+    )
+    if onvif_data:
+        camera.update(onvif_data)
+        camera["discovery_methods"].append("onvif:getdeviceinformation")
+    elif onvif_error:
+        camera["discovery_errors"].append(onvif_error)
+
+    identity_parts = [camera.get("manufacturer", ""), camera.get("model", "")]
+    identity = " ".join(part.strip() for part in identity_parts if str(part).strip()).strip()
+    if not identity and str(camera.get("serial_number", "")).strip():
+        identity = f"Serial {camera.get('serial_number', '')}"
+    camera["identity"] = identity or "N/A"
+    return camera
+
+
+def apply_camera_details_to_stream_info(stream_info: dict[str, Any], camera_details: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(stream_info or {})
+    details = dict(camera_details or {})
+    merged["camera_details"] = details
+    merged["camera_identity"] = str(details.get("identity", "N/A") or "N/A")
+    merged["camera_manufacturer"] = str(details.get("manufacturer", "") or "")
+    merged["camera_model"] = str(details.get("model", "") or "")
+    merged["camera_firmware_version"] = str(details.get("firmware_version", "") or "")
+    merged["camera_serial_number"] = str(details.get("serial_number", "") or "")
+    merged["camera_hardware_id"] = str(details.get("hardware_id", "") or "")
+    merged["camera_mac_address"] = str(details.get("mac_address", "") or "")
+    merged["camera_ip_address"] = str(details.get("ip_address", "") or "")
+    merged["camera_onvif_endpoint"] = str(details.get("onvif_endpoint", "") or "")
+    return merged
+
+
 def shorten_text(value: str, max_len: int = 90) -> str:
     if len(value) <= max_len:
         return value
@@ -2003,6 +2307,28 @@ class DiagnosticWorker(threading.Thread):
             return min(value, fps_nominal * 1.15)
         return value
 
+    def _probe_camera_identity(self) -> None:
+        self.emit("status", message="Querying camera identity via ONVIF/MAC lookup...")
+        details = discover_camera_details(self.context.rtsp_url, timeout_sec=5)
+        self.stream_info = apply_camera_details_to_stream_info(self.stream_info, details)
+
+        identity = str(details.get("identity", "N/A") or "N/A")
+        mac = str(details.get("mac_address", "") or "")
+        ip_address = str(details.get("ip_address", "") or "")
+        onvif_endpoint = str(details.get("onvif_endpoint", "") or "")
+
+        self.emit(
+            "log",
+            line=(
+                "Camera identity: "
+                f"{identity} | MAC={mac or 'N/A'} | IP={ip_address or 'N/A'}"
+            ),
+        )
+        if onvif_endpoint:
+            self.emit("log", line=f"ONVIF endpoint detected: {onvif_endpoint}")
+        for err in details.get("discovery_errors", []) or []:
+            self.emit("log", line=f"Camera detail probe note: {err}")
+
     def run(self) -> None:
         self.started_at = datetime.now()
         self.monotonic_started = time.monotonic()
@@ -2061,6 +2387,7 @@ class DiagnosticWorker(threading.Thread):
                     f"over {self.selected_transport.upper()}."
                 ),
             )
+            self._probe_camera_identity()
             self.emit("stream_info", info=self.stream_info)
             return
 
@@ -2074,6 +2401,7 @@ class DiagnosticWorker(threading.Thread):
             self.selected_transport = resolve_transport_for_ff_tools(
                 str(self.stream_info.get("selected_transport", self.selected_transport))
             )
+            self._probe_camera_identity()
             self.emit("stream_info", info=self.stream_info)
             return
 
@@ -2110,6 +2438,7 @@ class DiagnosticWorker(threading.Thread):
             "status",
             message="FFprobe not found. Running in fallback mode using FFmpeg-only diagnostics.",
         )
+        self._probe_camera_identity()
 
     def _capture_snapshot_if_possible(self) -> None:
         if not self.context.ffmpeg_path:
@@ -3092,6 +3421,15 @@ class DiagnosticWorker(threading.Thread):
                 ),
                 "stream_profile": str(self.stream_info.get("profile", "") or ""),
                 "stream_bit_rate_kbps": round(float(self.stream_info.get("bit_rate_kbps", 0.0) or 0.0), 3),
+                "camera_identity": str(self.stream_info.get("camera_identity", "N/A") or "N/A"),
+                "camera_manufacturer": str(self.stream_info.get("camera_manufacturer", "") or ""),
+                "camera_model": str(self.stream_info.get("camera_model", "") or ""),
+                "camera_firmware_version": str(self.stream_info.get("camera_firmware_version", "") or ""),
+                "camera_serial_number": str(self.stream_info.get("camera_serial_number", "") or ""),
+                "camera_hardware_id": str(self.stream_info.get("camera_hardware_id", "") or ""),
+                "camera_mac_address": str(self.stream_info.get("camera_mac_address", "") or ""),
+                "camera_ip_address": str(self.stream_info.get("camera_ip_address", "") or ""),
+                "camera_onvif_endpoint": str(self.stream_info.get("camera_onvif_endpoint", "") or ""),
                 "frames_received": frames_received,
                 "expected_frames": expected_frames,
                 "estimated_dropped_frames": estimated_drops,
@@ -3415,6 +3753,13 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
     run_id = str(report_data.get("run_id", ""))
     wall_duration = float(report_data.get("wall_clock_duration_sec", 0.0) or 0.0)
     req_duration = float(report_data.get("requested_duration_sec", 0.0) or 0.0)
+    camera_identity = str(summary.get("camera_identity", stream.get("camera_identity", "N/A")) or "N/A")
+    camera_model = str(summary.get("camera_model", stream.get("camera_model", "")) or "")
+    camera_manufacturer = str(summary.get("camera_manufacturer", stream.get("camera_manufacturer", "")) or "")
+    camera_serial = str(summary.get("camera_serial_number", stream.get("camera_serial_number", "")) or "")
+    camera_mac = str(summary.get("camera_mac_address", stream.get("camera_mac_address", "")) or "")
+    camera_ip = str(summary.get("camera_ip_address", stream.get("camera_ip_address", "")) or "")
+    camera_onvif = str(summary.get("camera_onvif_endpoint", stream.get("camera_onvif_endpoint", "")) or "")
 
     # â”€â”€ Colour palette â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if status == "completed":
@@ -3716,6 +4061,26 @@ def write_pdf_report(report_path: Path, report_data: dict) -> None:
                 )
             ),
             "Bitrate declared by metadata (different from measured live bandwidth).",
+        ),
+        (
+            "Camera Identity",
+            camera_identity,
+            "Best-effort identity from ONVIF using RTSP URL credentials.",
+        ),
+        (
+            "Camera Manufacturer / Model",
+            f"{camera_manufacturer or 'N/A'} / {camera_model or 'N/A'}",
+            "Reported by camera ONVIF GetDeviceInformation call.",
+        ),
+        (
+            "Camera Serial / MAC / IP",
+            f"{camera_serial or 'N/A'} / {camera_mac or 'N/A'} / {camera_ip or 'N/A'}",
+            "MAC is resolved from local ARP cache and may require L2 reachability.",
+        ),
+        (
+            "Camera ONVIF Endpoint",
+            camera_onvif or "N/A",
+            "Device service endpoint used for metadata query.",
         ),
         (
             "RTSP Transport (req / selected)",
@@ -4382,6 +4747,8 @@ class DiagnosticApp:
         self.startup_latency_var = tk.StringVar(value="0.0 s")
         self.packet_missed_var = tk.StringVar(value="0")
         self.health_var = tk.StringVar(value="100 (N/A)")
+        self.camera_identity_var = tk.StringVar(value="N/A")
+        self.camera_mac_var = tk.StringVar(value="N/A")
         self.last_report_var = tk.StringVar(value="-")
         self.bandwidth_chart_points: list[float] = []
         self.received_chart_points: list[float] = []
@@ -4699,6 +5066,8 @@ class DiagnosticApp:
         self._pair(summary_frame, "Startup Latency", self.startup_latency_var, 7, 2)
         self._pair(summary_frame, "Missed Packets", self.packet_missed_var, 8, 0)
         self._pair(summary_frame, "Health", self.health_var, 8, 2)
+        self._pair(summary_frame, "Camera Identity", self.camera_identity_var, 9, 0)
+        self._pair(summary_frame, "Camera MAC", self.camera_mac_var, 9, 2)
 
         summary_frame.columnconfigure(1, weight=1)
         summary_frame.columnconfigure(3, weight=1)
@@ -5060,6 +5429,19 @@ class DiagnosticApp:
                         "fps": 0.0,
                         "bit_rate_kbps": 0.0,
                     }
+                camera_details = discover_camera_details(rtsp_url, timeout_sec=5)
+                info = apply_camera_details_to_stream_info(info, camera_details)
+                camera_identity = str(camera_details.get("identity", "N/A") or "N/A")
+                camera_mac = str(camera_details.get("mac_address", "") or "")
+                self.event_queue.put(
+                    {
+                        "type": "log",
+                        "line": (
+                            "Camera details probe: "
+                            f"{camera_identity} | MAC={camera_mac or 'N/A'}"
+                        ),
+                    }
+                )
                 self.event_queue.put({"type": "stream_info", "info": info})
                 self.event_queue.put({"type": "status", "message": "Connection check successful."})
             except Exception as exc:
@@ -5085,6 +5467,8 @@ class DiagnosticApp:
         self.startup_latency_var.set("0.0 s")
         self.packet_missed_var.set("0")
         self.health_var.set("100 (N/A)")
+        self.camera_identity_var.set("N/A")
+        self.camera_mac_var.set("N/A")
         self.progress["value"] = 0
         self.bandwidth_chart_points = []
         self.received_chart_points = []
@@ -5252,16 +5636,29 @@ class DiagnosticApp:
             )
             if stream_bitrate > 0:
                 stream_text += f" | {stream_bitrate:.1f} kbps"
+            camera_identity = str(info.get("camera_identity", "N/A") or "N/A")
+            camera_mac = str(info.get("camera_mac_address", "") or "")
+            if camera_identity == "N/A":
+                details = info.get("camera_details", {}) or {}
+                parts = [
+                    str(details.get("manufacturer", "") or "").strip(),
+                    str(details.get("model", "") or "").strip(),
+                ]
+                camera_identity = " ".join(part for part in parts if part) or "N/A"
+                camera_mac = camera_mac or str(details.get("mac_address", "") or "")
             self.stream_var.set(stream_text)
             self.transport_live_var.set(
                 f"{selected_transport}/{selected_delivery} (Req: {requested_transport}/{requested_delivery})"
             )
             self.stream_counts_var.set(f"{stream_count}/{video_count}/{audio_count}")
+            self.camera_identity_var.set(camera_identity)
+            self.camera_mac_var.set(camera_mac or "N/A")
             self.log(
                 "Stream metadata: "
                 f"{stream_text} | transport={selected_transport} ({selected_delivery}) | "
                 f"streams={stream_count} (video={video_count}, audio={audio_count})"
             )
+            self.log(f"Camera details: {camera_identity} | MAC={camera_mac or 'N/A'}")
             if audio_count <= 0:
                 self.log("No audio stream detected. This is supported; diagnostics run on video stream only.")
             for item in info.get("streams", []):
@@ -5411,6 +5808,8 @@ class DiagnosticApp:
         summary = report_data.get("summary", {})
         self.bandwidth_avg_var.set(f"{float(deep_bandwidth.get('avg', 0.0) or 0.0):.1f} kbps")
         self.health_var.set(f"{deep_health.get('score', 'N/A')} ({deep_health.get('grade', 'N/A')})")
+        self.camera_identity_var.set(str(summary.get("camera_identity", "N/A") or "N/A"))
+        self.camera_mac_var.set(str(summary.get("camera_mac_address", "N/A") or "N/A"))
         selected_transport = str(transport.get("selected", "N/A")).upper()
         requested_transport = str(transport.get("requested", "N/A")).upper()
         selected_delivery = str(
